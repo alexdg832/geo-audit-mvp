@@ -3,25 +3,37 @@
 TrueSource is a GEO (Generative Engine Optimization) audit MVP. It audits how AI
 assistants like ChatGPT and Claude describe a business, grades the trustworthiness
 of the sources they're pulling from, and helps the business fix what's wrong. No
-paid API keys are required — everything runs fully locally on SQLite.
+paid API keys are required.
+
+Live demo: **https://geo-audit-mvp.vercel.app**
 
 ## Quickstart
 
+Data is stored in Postgres (via [Neon](https://neon.tech), provisioned through the
+Vercel Marketplace in production). For local dev, point `DATABASE_URL` /
+`DATABASE_URL_UNPOOLED` at any Postgres database — a free Neon project works well.
+
 ```bash
-cp .env.example .env
+cp .env.example .env   # then fill in your Postgres connection strings
 npm install
-npx prisma migrate dev   # creates the local SQLite db — only needed once, or after schema changes
-npx prisma db seed       # loads demo client + demo admin data — optional but recommended
+npx prisma db push     # syncs the schema — run again after schema changes
+npx prisma db seed     # loads demo client + demo admin data — optional but recommended
 npm run dev
 ```
 
 Then open [http://localhost:3000](http://localhost:3000).
 
+If this repo is linked to the Vercel project (`vercel link`), you can instead run
+`vercel env pull .env --environment=preview` — note that the database URLs are
+marked "Sensitive" in Vercel and won't come through via CLI pull; toggle that off
+in the dashboard (Settings → Environment Variables) if you want local dev wired
+to the same database.
+
 ## Environment variables
 
 Set in `.env` (see `.env.example`):
 
-- `DATABASE_URL` — the SQLite database file used by Prisma. Defaults to `file:./dev.db`.
+- `DATABASE_URL` / `DATABASE_URL_UNPOOLED` — Postgres connection strings (pooled and direct). Neon provides both automatically on Vercel.
 - `SESSION_SECRET` — secret used to sign client session cookies.
 - `ADMIN_PASSWORD` — the password that gates `/admin`.
 - `AUDIT_DEMO_FAST` — set to `"true"` to shorten the ~60–90s audit run to ~10s, handy for fast manual testing.
@@ -67,5 +79,5 @@ Other things worth knowing:
 
 - [Next.js](https://nextjs.org) (App Router, TypeScript)
 - [Tailwind CSS](https://tailwindcss.com)
-- [Prisma](https://www.prisma.io) + SQLite
-- No external services required
+- [Prisma](https://www.prisma.io) + [Postgres (Neon)](https://neon.tech)
+- Deployed on [Vercel](https://vercel.com)

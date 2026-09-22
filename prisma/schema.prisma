@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Business {
+  id            String        @id @default(cuid())
+  name          String
+  website       String?
+  location      String?
+  createdAt     DateTime      @default(now())
+  audits        Audit[]
+  users         User[]
+  truthBrief    TruthBrief?
+  contentPushes ContentPush[]
+}
+
+model Audit {
+  id                  String          @id @default(cuid())
+  businessId          String
+  business            Business        @relation(fields: [businessId], references: [id])
+  status              String          @default("running") // running | complete
+  stepsJson           String          @default("[]")
+  score               Int?
+  sourceTrustScore    Int?
+  consistencyScore    Int?
+  aiReadinessScore    Int?
+  aiVisibilityScore   Int?
+  websiteChecksJson   String? // JSON: WebsiteCheckResult
+  aiSnippetJson       String? // JSON: mocked "what AI says" snippet + flagged claims
+  recommendationsJson String? // JSON: string[] of top fixes
+  createdAt           DateTime        @default(now())
+  completedAt         DateTime?
+  mentions            SourceMention[]
+
+  @@index([businessId])
+}
+
+model SourceMention {
+  id        String   @id @default(cuid())
+  auditId   String
+  audit     Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  name      String
+  url       String?
+  tier      Int // 1 = authoritative, 2 = mixed, 3 = low-trust
+  snippet   String
+  accurate  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([auditId])
+}
+
+model User {
+  id              String           @id @default(cuid())
+  email           String           @unique
+  passwordHash    String
+  businessId      String
+  business        Business         @relation(fields: [businessId], references: [id])
+  createdAt       DateTime         @default(now())
+  contactRequests ContactRequest[]
+  notifications   Notification[]
+}
+
+model ContactRequest {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  name      String
+  email     String
+  goals     String?
+  wantsCall Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model TruthBrief {
+  id              String   @id @default(cuid())
+  businessId      String   @unique
+  business        Business @relation(fields: [businessId], references: [id])
+  description     String?
+  services        String?
+  location        String?
+  keyFacts        String? // newline-separated facts
+  approvedSources String? // newline-separated URLs
+  updatedAt       DateTime @updatedAt
+}
+
+model ContentPush {
+  id            String   @id @default(cuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id])
+  title         String
+  type          String // Website FAQ/Schema update | Press release | Directory listing | Knowledge profile | Blog article
+  targetChannel String?
+  contentBody   String?
+  status        String   @default("Planned") // Planned | In Progress | Published
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([businessId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}

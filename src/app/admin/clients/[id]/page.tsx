@@ -21,7 +21,13 @@ export default async function AdminClientDetailPage({
     where: { id },
     include: {
       truthBrief: true,
-      users: { select: { id: true, email: true } },
+      users: {
+        select: {
+          id: true,
+          email: true,
+          contactRequests: { orderBy: { createdAt: "desc" }, take: 1 },
+        },
+      },
       contentPushes: { orderBy: { createdAt: "desc" } },
       audits: {
         where: { status: "complete" },
@@ -33,14 +39,60 @@ export default async function AdminClientDetailPage({
   if (!business) notFound();
 
   const latestAudit = business.audits[0];
+  const contactRequest = business.users[0]?.contactRequests[0] ?? null;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-6 py-10">
       <AdminNav title={business.name} />
 
       <Card>
+        <h2 className="text-lg font-semibold text-stone-900">Client profile</h2>
+        <div className="mt-3 space-y-3 text-sm">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <p className="text-stone-500">
+              Website:{" "}
+              <span className="text-stone-800">{business.website ?? "Not provided"}</span>
+            </p>
+            <p className="text-stone-500">
+              Location:{" "}
+              <span className="text-stone-800">{business.location ?? "Not provided"}</span>
+            </p>
+            <p className="text-stone-500">
+              Login email{business.users.length === 1 ? "" : "s"}:{" "}
+              <span className="text-stone-800">
+                {business.users.length > 0
+                  ? business.users.map((u) => u.email).join(", ")
+                  : "None yet"}
+              </span>
+            </p>
+            <p className="text-stone-500">
+              Wants a call:{" "}
+              <span className="text-stone-800">{contactRequest?.wantsCall ? "Yes" : "No"}</span>
+            </p>
+          </div>
+          <div className="rounded-lg bg-stone-50 p-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-stone-500">
+              What they told us they want
+            </p>
+            {contactRequest?.goals ? (
+              <p className="mt-1 text-stone-800">{contactRequest.goals}</p>
+            ) : (
+              <p className="mt-1 text-stone-500">
+                No goals submitted — this client skipped straight to the dashboard.
+              </p>
+            )}
+            {contactRequest?.name && (
+              <p className="mt-2 text-xs text-stone-500">
+                Submitted by {contactRequest.name} ({contactRequest.email})
+              </p>
+            )}
+          </div>
+        </div>
+      </Card>
+
+      <Card className="mt-6">
         <h2 className="text-lg font-semibold text-stone-900">Client audit</h2>
-        <div className="mt-3 space-y-3">
+        <div className="mt-3">
           {latestAudit ? (
             <div className="flex items-center justify-between">
               <p className="text-stone-700">
@@ -56,16 +108,18 @@ export default async function AdminClientDetailPage({
           ) : (
             <p className="text-stone-500">No completed audit yet.</p>
           )}
-          <p className="text-sm text-stone-500">
-            Login email{business.users.length === 1 ? "" : "s"}:{" "}
-            {business.users.length > 0
-              ? business.users.map((u) => u.email).join(", ")
-              : "None yet"}
-          </p>
         </div>
       </Card>
 
-      <Card className="mt-6">
+      <div className="mt-8">
+        <h2 className="text-lg font-semibold text-stone-900">GEO optimization</h2>
+        <p className="mt-1 text-sm text-stone-600">
+          These are the tools we use to shape what AI says about this client — a visual
+          walkthrough for now, not wired up to real publishing yet.
+        </p>
+      </div>
+
+      <Card className="mt-4">
         <h2 className="text-lg font-semibold text-stone-900">Truth Brief</h2>
         <div className="mt-4">
           <TruthBriefForm businessId={business.id} initialValues={business.truthBrief} />

@@ -1,65 +1,122 @@
 "use server";
 
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
+import { getCurrentUser, isAdmin } from "@/lib/auth/session";
+import { createSignedToken } from "@/lib/auth/signedToken";
 import { prisma } from "@/lib/db";
-import { runAudit } from "@/lib/audit/runAudit";
-import { initialSteps } from "@/lib/audit/steps";
+import { hashClientIp } from "@/lib/providers/limits";
+import { advanceScan, checkScanRateLimit, createScan } from "@/lib/scan/engine";
+import { normalizeWebsiteUrl } from "@/lib/scan/fetcher";
 import { ActionState } from "./types";
 
-export async function startAuditAction(
-  _prevState: ActionState,
-  formData: FormData
-): Promise<ActionState> {
-  const name = String(formData.get("name") || "").trim();
-  const website = String(formData.get("website") || "").trim();
-  const location = String(formData.get("location") || "").trim();
+const CLAIM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export async function claimCookieName(auditId: string): Promise<string> {
+  return `geo_claim_${auditId}`;
+}
+
+async function issueClaimCookie(auditId: string): Promise<void> {
+  const store = await cookies();
+  store.set(await claimCookieName(auditId), createSignedToken({ auditId }, CLAIM_TTL_MS), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: CLAIM_TTL_MS / 1000,
+  });
+}
+
+async function requesterIpHash(): Promise<string | null> {
+  const h = await headers();
+  const forwarded = h.get("x-forwarded-for");
+  const ip = forwarded ? forwarded.split(",")[0]?.trim() : h.get("x-real-ip");
+  return hashClientIp(ip);
+}
+
+function kickFirstTick(auditId: string): void {
+  after(async () => {
+    try {
+      await advanceScan(auditId);
+    } catch (err) {
+      console.error("First scan tick failed", { auditId, message: err instanceof Error ? err.message : String(err) });
+    }
+  });
+}
+
+export async function startAuditAction(_prevState: ActionState, formData: FormData): Promise<ActionState> {
+  const name = String(formData.get("name") || "").trim().slice(0, 200);
+  const websiteInput = String(formData.get("website") || "").trim().slice(0, 2048);
+  const location = String(formData.get("location") || "").trim().slice(0, 200);
 
   if (!name) return { error: "Business name is required." };
+  const website = websiteInput ? normalizeWebsiteUrl(websiteInput) : null;
+  if (websiteInput && !website) return { error: "That website address doesn't look valid." };
 
-  const business = await prisma.business.create({
-    data: { name, website: website || null, location: location || null },
-  });
+  const ipHash = await requesterIpHash();
+  const limited = await checkScanRateLimit(ipHash);
+  if (limited) return { error: limited };
 
-  const audit = await prisma.audit.create({
-    data: {
+  let auditId: string;
+  try {
+    const business = await prisma.business.create({
+      data: { name, website: website ?? null, location: location || null },
+    });
+    ({ auditId } = await createScan({
       businessId: business.id,
-      status: "running",
-      stepsJson: JSON.stringify(initialSteps()),
-    },
-  });
+      name,
+      website,
+      location: location || null,
+      requesterIpHash: ipHash,
+    }));
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Could not start the audit." };
+  }
 
-  // Fire-and-forget: the running page polls getAuditStatus for progress.
-  // TODO(production): move this to a real background job queue (e.g. Vercel
-  // Queues) instead of an unawaited promise, which only survives as long as
-  // this Node process stays alive.
-  void runAudit(audit.id).catch((err) => {
-    console.error("Audit run failed", err);
-  });
-
-  redirect(`/audit/${audit.id}/running`);
+  await issueClaimCookie(auditId);
+  kickFirstTick(auditId);
+  redirect(`/audit/${auditId}/running`);
 }
 
 export async function rerunAuditAction(businessId: string) {
-  const audit = await prisma.audit.create({
-    data: {
-      businessId,
-      status: "running",
-      stepsJson: JSON.stringify(initialSteps()),
-    },
-  });
+  const user = await getCurrentUser();
+  const admin = await isAdmin();
+  if (!admin && (!user || user.businessId !== businessId)) redirect("/login");
 
-  void runAudit(audit.id).catch((err) => {
-    console.error("Audit run failed", err);
-  });
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+  if (!business) redirect("/dashboard");
 
-  redirect(`/audit/${audit.id}/running`);
+  const inFlight = await prisma.audit.findFirst({
+    where: { businessId, status: "running" },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (inFlight) redirect(`/audit/${inFlight.id}/running`);
+
+  const { auditId } = await createScan({
+    businessId,
+    name: business.name,
+    website: business.website ? normalizeWebsiteUrl(business.website) : null,
+    location: business.location,
+    requesterIpHash: await requesterIpHash(),
+  });
+  kickFirstTick(auditId);
+  redirect(`/audit/${auditId}/running`);
 }
 
+/** Legacy status poll for audits created before the scan engine. */
 export async function getAuditStatus(auditId: string) {
   const audit = await prisma.audit.findUnique({
     where: { id: auditId },
     select: { status: true, stepsJson: true },
   });
   if (!audit) return null;
-  return { status: audit.status, steps: JSON.parse(audit.stepsJson) };
+  let steps: unknown = [];
+  try {
+    steps = JSON.parse(audit.stepsJson);
+  } catch {
+    steps = [];
+  }
+  return { status: audit.status, steps };
 }

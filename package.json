@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && prisma db push --accept-data-loss && next build",
+    "build": "prisma generate && prisma migrate deploy && next build",
     "start": "next start",
     "lint": "eslint",
     "check-secrets": "node scripts/check-secrets.mjs",
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@prisma/client": "6.19.3",
+    "@react-pdf/renderer": "^4.9.0",
     "cheerio": "^1.2.0",
     "next": "16.3.6",
     "prisma": "6.19.3",

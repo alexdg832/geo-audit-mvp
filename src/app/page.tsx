@@ -4,6 +4,9 @@ import { AuditForm } from "@/components/AuditForm";
 import { GeoTerm } from "@/components/GeoTerm";
 import { Card } from "@/components/ui/Card";
 
+// startAuditAction kicks the first scan tick with after(); it runs up to this limit.
+export const maxDuration = 120;
+
 export default function HomePage() {
   return (
     <div className="flex flex-1 flex-col">

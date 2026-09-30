@@ -1,6 +1,9 @@
 import { PrismaClient } from "@prisma/client";
 import { hashPassword } from "../src/lib/auth/password";
 
+// The demo scan runs on labelled fixtures so the seed never calls a paid engine.
+process.env.MOCK_MODE = "true";
+
 const prisma = new PrismaClient();
 
 function databaseHost(): string {
@@ -24,9 +27,10 @@ async function main() {
     prisma.truthBrief.deleteMany(),
     prisma.contactRequest.deleteMany(),
     prisma.user.deleteMany(),
-    prisma.sourceMention.deleteMany(),
     prisma.audit.deleteMany(),
     prisma.business.deleteMany(),
+    prisma.providerCache.deleteMany(),
+    prisma.providerEvent.deleteMany(),
   ]);
 
   const business = await prisma.business.create({
@@ -35,144 +39,6 @@ async function main() {
       website: "https://riversidefamilydental.example.com",
       location: "Portland, OR",
     },
-  });
-
-  const stepsJson = JSON.stringify([
-    { key: "website", label: "Checking your website", status: "done" },
-    { key: "mentions", label: "Finding what's said about you", status: "done" },
-    { key: "sourceTrust", label: "Grading source trust", status: "done" },
-    { key: "aiReadiness", label: "Checking AI readiness", status: "done" },
-    { key: "score", label: "Calculating your score", status: "done" },
-  ]);
-
-  const websiteChecksJson = JSON.stringify({
-    urlProvided: true,
-    url: "https://riversidefamilydental.example.com",
-    fetchOk: true,
-    fetchError: null,
-    https: true,
-    title: "Riverside Family Dental — Portland Dentist",
-    metaDescription: "Family and cosmetic dentistry in Portland, OR. New patients welcome.",
-    hasSchemaOrg: false,
-    schemaType: null,
-    hasAboutPage: true,
-    hasVisibleContactInfo: true,
-    detectedPhone: "(503) 555-0142",
-    detectedAddressHint: "123 Riverside Ave",
-    robots: {
-      checked: true,
-      gptBotAllowed: true,
-      claudeBotAllowed: false,
-      perplexityBotAllowed: true,
-    },
-    hasLlmsTxt: false,
-  });
-
-  const aiSnippetJson = JSON.stringify([
-    {
-      text: "Riverside Family Dental is a family and cosmetic dentistry practice based in Portland, OR. ",
-      accurate: true,
-    },
-    {
-      text: "A few listings show an old phone number for Riverside Family Dental that's no longer in service. ",
-      accurate: false,
-    },
-    {
-      text: "Overall reputation appears generally positive based on available sources.",
-      accurate: true,
-    },
-  ]);
-
-  const recommendationsJson = JSON.stringify([
-    "Add Schema.org LocalBusiness markup so AI assistants can read your hours, address, and services directly.",
-    "Update your phone number everywhere it appears out of date, including older directory listings.",
-    "Allow ClaudeBot to crawl your site so Claude can read your pages directly instead of relying on secondhand mentions.",
-  ]);
-
-  const audit = await prisma.audit.create({
-    data: {
-      businessId: business.id,
-      status: "complete",
-      score: 68,
-      sourceTrustScore: 22,
-      consistencyScore: 18,
-      aiReadinessScore: 17,
-      aiVisibilityScore: 11,
-      stepsJson,
-      websiteChecksJson,
-      aiSnippetJson,
-      recommendationsJson,
-      completedAt: new Date("2026-09-01T12:00:00Z"),
-    },
-  });
-
-  await prisma.sourceMention.createMany({
-    data: [
-      {
-        auditId: audit.id,
-        name: "Riverside Family Dental — Official Website",
-        url: "https://riversidefamilydental.example.com",
-        tier: 1,
-        snippet: "The business's own site, treated as the primary source of truth.",
-        accurate: true,
-      },
-      {
-        auditId: audit.id,
-        name: "Google Business Profile",
-        url: null,
-        tier: 1,
-        snippet: "Confirms the business's name, location, and services match public records.",
-        accurate: true,
-      },
-      {
-        auditId: audit.id,
-        name: "Better Business Bureau (BBB)",
-        url: "https://www.bbb.org",
-        tier: 1,
-        snippet: "Cites the correct hours and contact details.",
-        accurate: true,
-      },
-      {
-        auditId: audit.id,
-        name: "Yelp",
-        url: "https://www.yelp.com",
-        tier: 2,
-        snippet: "Describes the business accurately, matching its official listing.",
-        accurate: true,
-      },
-      {
-        auditId: audit.id,
-        name: "Chamber of Commerce Member Directory",
-        url: null,
-        tier: 2,
-        snippet: "Lists an outdated address that no longer matches the business's current location.",
-        accurate: false,
-      },
-      {
-        auditId: audit.id,
-        name: "Niche Industry Directory Listing",
-        url: null,
-        tier: 2,
-        snippet: "Cites the correct hours and contact details.",
-        accurate: true,
-      },
-      {
-        auditId: audit.id,
-        name: "Reddit — r/Portland thread",
-        url: "https://www.reddit.com",
-        tier: 3,
-        snippet: "Repeats an old phone number that's no longer in service.",
-        accurate: false,
-      },
-      {
-        auditId: audit.id,
-        name: "Random forum post",
-        url: null,
-        tier: 3,
-        snippet: "Confuses this business with a similarly named dental office in another city.",
-        accurate: false,
-      },
-    ],
   });
 
   const passwordPlaintext = "demopassword123";
@@ -197,10 +63,8 @@ async function main() {
   await prisma.truthBrief.create({
     data: {
       businessId: business.id,
-      description:
-        "Riverside Family Dental is a family and cosmetic dentistry practice serving Portland, OR and the surrounding area.",
-      services:
-        "General dentistry, cosmetic dentistry, teeth whitening, dental implants, emergency dental care",
+      description: "Riverside Family Dental is a family and cosmetic dentistry practice serving Portland, OR and the surrounding area.",
+      services: "General dentistry, cosmetic dentistry, teeth whitening, dental implants, emergency dental care",
       location: "123 Riverside Ave, Portland, OR 97201",
       keyFacts: [
         "Open Monday through Saturday, 8am to 6pm.",
@@ -233,8 +97,7 @@ async function main() {
         title: "Add LocalBusiness schema markup",
         type: "Website FAQ/Schema update",
         targetChannel: "riversidefamilydental.example.com",
-        contentBody:
-          "Add Schema.org LocalBusiness JSON-LD with name, address, phone, and hours so AI assistants can read it directly.",
+        contentBody: "Add Schema.org LocalBusiness JSON-LD with name, address, phone, and hours so AI assistants can read it directly.",
         status: "In Progress",
       },
     }),
@@ -244,8 +107,7 @@ async function main() {
         title: "New patient FAQ blog post",
         type: "Blog article",
         targetChannel: "Practice blog",
-        contentBody:
-          "Draft a short FAQ post covering insurance, new patient forms, and what to expect at a first visit.",
+        contentBody: "Draft a short FAQ post covering insurance, new patient forms, and what to expect at a first visit.",
         status: "Planned",
       },
     }),
@@ -253,35 +115,33 @@ async function main() {
 
   await prisma.notification.createMany({
     data: [
-      {
-        userId: user.id,
-        message: `New content push created: "${plannedPush.title}" (Planned).`,
-        read: false,
-      },
-      {
-        userId: user.id,
-        message: `"${publishedPush.title}" status changed to Published.`,
-        read: true,
-      },
-      {
-        userId: user.id,
-        message: `"${inProgressPush.title}" status changed to In Progress.`,
-        read: true,
-      },
-      {
-        userId: user.id,
-        message:
-          "We reviewed your latest audit results — a few directories still show an old phone number, and we're getting those corrected this week.",
-        read: false,
-      },
+      { userId: user.id, message: `New content push created: "${plannedPush.title}" (Planned).`, read: false },
+      { userId: user.id, message: `"${publishedPush.title}" status changed to Published.`, read: true },
+      { userId: user.id, message: `"${inProgressPush.title}" status changed to In Progress.`, read: true },
     ],
   });
+
+  // Demo report: a complete mock-mode scan so the dashboard and admin views have real rows to show.
+  const { advanceScan, createScan } = await import("../src/lib/scan/engine");
+  const { auditId } = await createScan({
+    businessId: business.id,
+    name: business.name,
+    website: business.website,
+    location: business.location,
+    requesterIpHash: null,
+  });
+  for (let i = 0; i < 60; i++) {
+    const tick = await advanceScan(auditId);
+    if (tick.status !== "running") break;
+  }
+  const audit = await prisma.audit.findUniqueOrThrow({ where: { id: auditId }, select: { status: true, score: true } });
 
   console.log("============================================================");
   console.log("Demo client login:");
   console.log("  email:    demo@riversidefamilydental.example");
   console.log(`  password: ${passwordPlaintext}`);
-  console.log("Demo admin password: whatever ADMIN_PASSWORD is set to in .env (check .env.example).");
+  console.log(`Demo scan: ${audit.status}, score ${audit.score} (mock fixtures, labelled as such in the report)`);
+  console.log("Demo admin password: whatever ADMIN_PASSWORD is set to in .env.local (see .env.example).");
   console.log("============================================================");
 }
 

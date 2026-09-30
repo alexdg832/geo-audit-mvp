@@ -1,7 +1,11 @@
+import type { Metadata } from "next";
+import type { Prisma } from "@prisma/client";
 import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
+import { isAdmin } from "@/lib/auth/session";
 import { CATEGORY_MAX } from "@/lib/audit/score";
 import { AiSnippetPart, WebsiteCheckResult } from "@/lib/audit/types";
+import { loadReport } from "@/lib/report/load";
 import { ScoreGauge } from "@/components/ScoreGauge";
 import { CategoryBar } from "@/components/CategoryBar";
 import { AiSnippetBlock } from "@/components/AiSnippetBlock";
@@ -10,36 +14,135 @@ import { WebsiteChecklist } from "@/components/WebsiteChecklist";
 import { Card } from "@/components/ui/Card";
 import { LinkButton } from "@/components/ui/Button";
 import { GeoTerm } from "@/components/GeoTerm";
+import { ReportNav } from "@/components/report/Section";
+import { ExecutiveSummary } from "@/components/report/ExecutiveSummary";
+import { CriticalFailures } from "@/components/report/CriticalFailures";
+import { PillarBreakdown } from "@/components/report/PillarBreakdown";
+import { HowWeScore } from "@/components/report/HowWeScore";
+import { EvidenceExplorer } from "@/components/report/EvidenceExplorer";
+import { CompetitorComparison } from "@/components/report/CompetitorComparison";
+import { SourceMap } from "@/components/report/SourceMap";
+import { CostOfInaction } from "@/components/report/CostOfInaction";
+import { Roadmap } from "@/components/report/Roadmap";
+import { Section } from "@/components/report/Section";
 
-export default async function AuditResultsPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export async function generateMetadata({ params }: PageProps<"/audit/[id]/results">): Promise<Metadata> {
+  const { id } = await params;
+  const audit = await prisma.audit.findUnique({ where: { id }, select: { resolvedName: true, business: { select: { name: true } } } });
+  const name = audit?.resolvedName ?? audit?.business.name ?? "Business";
+  return { title: `GEO audit report — ${name}`, robots: { index: false, follow: false } };
+}
+
+export default async function AuditResultsPage({ params }: PageProps<"/audit/[id]/results">) {
   const { id } = await params;
   const audit = await prisma.audit.findUnique({
     where: { id },
-    include: { business: { include: { users: true } }, mentions: true },
+    include: { business: { include: { users: { select: { id: true } } } }, mentions: true },
   });
   if (!audit) notFound();
-  if (audit.status !== "complete") redirect(`/audit/${id}/running`);
+  if (audit.status === "running") redirect(`/audit/${id}/running`);
+  if (audit.status === "failed") {
+    return (
+      <main className="mx-auto w-full max-w-3xl px-6 py-16 text-center">
+        <h1 className="text-2xl font-bold text-stone-900">This audit could not be completed</h1>
+        <p className="mt-2 text-stone-600">{audit.error ?? "An error occurred while scanning."}</p>
+        <div className="mt-6 flex justify-center">
+          <LinkButton href="/">Start a new audit</LinkButton>
+        </div>
+      </main>
+    );
+  }
 
-  const websiteChecks = JSON.parse(audit.websiteChecksJson ?? "{}") as WebsiteCheckResult;
-  const aiSnippet = JSON.parse(audit.aiSnippetJson ?? "[]") as AiSnippetPart[];
-  const recommendations = JSON.parse(audit.recommendationsJson ?? "[]") as string[];
+  if (audit.scanVersion) {
+    const data = await loadReport(id);
+    if (!data) notFound();
+    const unlocked = data.hasAccount || (await isAdmin());
+    const completedAt = data.audit.completedAt ? new Date(data.audit.completedAt) : null;
+    return (
+      <main className="mx-auto w-full max-w-4xl px-6 py-10">
+        {data.audit.isMock && (
+          <p className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-900">
+            Mock mode: this report was produced from labelled fixture data, not from real AI engines. It must not be shown to a customer.
+          </p>
+        )}
+        <div className="text-center">
+          <p className="text-sm font-semibold uppercase tracking-wide text-accent">{data.audit.businessName}</p>
+          <h1 className="mt-1 text-3xl font-bold text-stone-900">Your GEO audit report</h1>
+          <p className="mt-2 text-sm text-stone-600">
+            {data.audit.category ? `${data.audit.category[0].toUpperCase()}${data.audit.category.slice(1)}` : "Business"}
+            {data.audit.location ? ` in ${data.audit.location}` : ""}
+            {data.audit.domain ? ` · ${data.audit.domain}` : ""}
+            {completedAt ? ` · scanned ${completedAt.toLocaleDateString("en-US", { timeZone: "UTC", dateStyle: "medium" })}` : ""}
+          </p>
+          <div className="mt-3 print:hidden">
+            <a href={`/api/audits/${id}/pdf`} className="text-sm font-medium text-accent hover:underline">
+              Download PDF
+            </a>
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <ReportNav />
+        </div>
+
+        <div className="space-y-6">
+          <ExecutiveSummary data={data} />
+          <CriticalFailures data={data} />
+          <PillarBreakdown data={data} />
+          <Section id="evidence" title="Evidence explorer" intro="Every answer we collected, with the passages each cited source supports. Nothing here is generated by us — it is what the engines said.">
+            <EvidenceExplorer runs={data.runs} prompts={data.prompts} engines={data.engines} businessName={data.audit.businessName} />
+          </Section>
+          <CompetitorComparison data={data} />
+          <SourceMap data={data} />
+          <CostOfInaction data={data} />
+          <Roadmap data={data} unlocked={unlocked} />
+          <HowWeScore data={data} />
+        </div>
+
+        <div className="mt-10 flex flex-col items-center gap-3 print:hidden">
+          {data.hasAccount ? (
+            <LinkButton href="/dashboard" className="w-full max-w-xs">
+              Back to dashboard
+            </LinkButton>
+          ) : (
+            <LinkButton href={`/audit/${id}/contact`} className="w-full max-w-xs">
+              Fix this with us
+            </LinkButton>
+          )}
+          <p className="text-xs text-stone-500">
+            Curious what <GeoTerm /> actually changes? We turn these fixes into real content and source-building work.
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  return <LegacyResults audit={audit} />;
+}
+
+type LegacyAudit = Prisma.AuditGetPayload<{ include: { business: { include: { users: { select: { id: true } } } }; mentions: true } }>;
+
+function parseJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function LegacyResults({ audit }: { audit: LegacyAudit }) {
+  const websiteChecks = parseJson<WebsiteCheckResult | null>(audit.websiteChecksJson, null);
+  const aiSnippet = parseJson<AiSnippetPart[]>(audit.aiSnippetJson, []);
+  const recommendations = parseJson<string[]>(audit.recommendationsJson, []);
   const hasAccount = audit.business.users.length > 0;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-6 py-16">
       <div className="text-center">
-        <p className="text-sm font-semibold uppercase tracking-wide text-accent">
-          {audit.business.name}
-        </p>
+        <p className="text-sm font-semibold uppercase tracking-wide text-accent">{audit.business.name}</p>
         <h1 className="mt-1 text-3xl font-bold text-stone-900">Your GEO audit results</h1>
-        <p className="mt-2 text-stone-600">
-          Here&apos;s how AI assistants currently see your business, and what&apos;s shaping that
-          view.
-        </p>
+        <p className="mt-2 text-stone-600">This audit predates the evidence-based scan. Re-run it to get the full report.</p>
       </div>
 
       <div className="mt-8 flex justify-center">
@@ -48,66 +151,52 @@ export default async function AuditResultsPage({
 
       <Card className="mt-8 space-y-5">
         <h2 className="text-lg font-semibold text-stone-900">Score breakdown</h2>
-        <CategoryBar
-          label="Source Trust"
-          score={audit.sourceTrustScore ?? 0}
-          max={CATEGORY_MAX.sourceTrust}
-          tooltip="Share of mentions coming from authoritative vs. low-trust sources."
-        />
-        <CategoryBar
-          label="Consistency"
-          score={audit.consistencyScore ?? 0}
-          max={CATEGORY_MAX.consistency}
-          tooltip="Whether your name, address, phone, and description match across sources."
-        />
-        <CategoryBar
-          label="Website AI Readiness"
-          score={audit.aiReadinessScore ?? 0}
-          max={CATEGORY_MAX.aiReadiness}
-          tooltip="Whether your website is set up for AI crawlers to read and understand."
-        />
-        <CategoryBar
-          label="AI Visibility"
-          score={audit.aiVisibilityScore ?? 0}
-          max={CATEGORY_MAX.aiVisibility}
-          tooltip="Whether AI assistants mention you at all, and how accurately."
-        />
+        <CategoryBar label="Source Trust" score={audit.sourceTrustScore ?? 0} max={CATEGORY_MAX.sourceTrust} />
+        <CategoryBar label="Consistency" score={audit.consistencyScore ?? 0} max={CATEGORY_MAX.consistency} />
+        <CategoryBar label="Website AI Readiness" score={audit.aiReadinessScore ?? 0} max={CATEGORY_MAX.aiReadiness} />
+        <CategoryBar label="AI Visibility" score={audit.aiVisibilityScore ?? 0} max={CATEGORY_MAX.aiVisibility} />
       </Card>
 
-      <Card className="mt-6">
-        <h2 className="text-lg font-semibold text-stone-900">What AI currently says about you</h2>
-        <div className="mt-3">
-          <AiSnippetBlock parts={aiSnippet} />
-        </div>
-      </Card>
+      {aiSnippet.length > 0 && (
+        <Card className="mt-6">
+          <h2 className="text-lg font-semibold text-stone-900">What AI currently says about you</h2>
+          <div className="mt-3">
+            <AiSnippetBlock parts={aiSnippet} />
+          </div>
+        </Card>
+      )}
 
-      <Card className="mt-6">
-        <h2 className="text-lg font-semibold text-stone-900">Website AI readiness details</h2>
-        <div className="mt-3">
-          <WebsiteChecklist checks={websiteChecks} />
-        </div>
-      </Card>
+      {websiteChecks && (
+        <Card className="mt-6">
+          <h2 className="text-lg font-semibold text-stone-900">Website AI readiness details</h2>
+          <div className="mt-3">
+            <WebsiteChecklist checks={websiteChecks} />
+          </div>
+        </Card>
+      )}
 
-      <Card className="mt-6">
-        <h2 className="text-lg font-semibold text-stone-900">Sources we found</h2>
-        <div className="mt-3">
-          <SourceTierList mentions={audit.mentions} />
-        </div>
-      </Card>
+      {audit.mentions.length > 0 && (
+        <Card className="mt-6">
+          <h2 className="text-lg font-semibold text-stone-900">Sources we found</h2>
+          <div className="mt-3">
+            <SourceTierList mentions={audit.mentions} />
+          </div>
+        </Card>
+      )}
 
-      <Card className="mt-6">
-        <h2 className="text-lg font-semibold text-stone-900">Top fixes</h2>
-        <ol className="mt-3 space-y-2">
-          {recommendations.map((rec, i) => (
-            <li key={i} className="flex gap-3 text-sm text-stone-700">
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
-                {i + 1}
-              </span>
-              <span>{rec}</span>
-            </li>
-          ))}
-        </ol>
-      </Card>
+      {recommendations.length > 0 && (
+        <Card className="mt-6">
+          <h2 className="text-lg font-semibold text-stone-900">Top fixes</h2>
+          <ol className="mt-3 space-y-2">
+            {recommendations.map((rec, i) => (
+              <li key={i} className="flex gap-3 text-sm text-stone-700">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">{i + 1}</span>
+                <span>{rec}</span>
+              </li>
+            ))}
+          </ol>
+        </Card>
+      )}
 
       <div className="mt-10 flex flex-col items-center gap-3">
         {hasAccount ? (
@@ -115,13 +204,12 @@ export default async function AuditResultsPage({
             Back to dashboard
           </LinkButton>
         ) : (
-          <LinkButton href={`/audit/${id}/contact`} className="w-full max-w-xs">
+          <LinkButton href={`/audit/${audit.id}/contact`} className="w-full max-w-xs">
             Fix this with us
           </LinkButton>
         )}
         <p className="text-xs text-stone-500">
-          Curious what <GeoTerm /> actually changes? We turn these fixes into real content and
-          source-building work.
+          Curious what <GeoTerm /> actually changes? We turn these fixes into real content and source-building work.
         </p>
       </div>
     </main>

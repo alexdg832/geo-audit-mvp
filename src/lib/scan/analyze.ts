@@ -27,6 +27,8 @@ export interface ClassifierOutput {
   sentiment: "positive" | "neutral" | "negative" | "mixed" | "not_applicable";
   accuracy: "accurate" | "inaccurate" | "unverifiable" | "not_applicable";
   accuracyNotes: string;
+  /** Set when the answer appears to describe a different business with the same or a similar name. */
+  ambiguity: string | null;
   businesses: ClassifierBusiness[];
 }
 
@@ -35,6 +37,7 @@ export interface AnswerAnalysis extends DeterministicAnalysis {
   sentiment: ClassifierOutput["sentiment"] | null;
   accuracy: ClassifierOutput["accuracy"] | null;
   accuracyNotes: string | null;
+  ambiguity: string | null;
   competitors: { name: string; domain: string | null; position: number }[];
   classifierUsed: boolean;
 }
@@ -191,6 +194,7 @@ Return JSON with exactly these keys:
   "sentiment": "positive" | "neutral" | "negative" | "mixed" | "not_applicable" — tone of what the answer says about the target; not_applicable when not mentioned,
   "accuracy": "accurate" | "inaccurate" | "unverifiable" | "not_applicable" — whether the answer's specific claims about the target agree with the verified facts; unverifiable when it makes claims the facts cannot confirm; not_applicable when not mentioned,
   "accuracyNotes": string — quote each claim about the target that conflicts with the facts, or "" if none,
+  "ambiguity": string | null — if the answer describes a different business that shares the target's name or a very similar one (another city, another category, a chain with the same name), say which in one sentence; otherwise null,
   "businesses": [ { "name": string, "domain": string | null, "isTarget": boolean } ] — every distinct business the answer recommends or names, in order of first appearance; mark the target with isTarget true. Exclude generic categories, cities, and platforms such as Yelp or Google.
 }`,
   };
@@ -230,6 +234,7 @@ export function parseClassifierOutput(text: string): ClassifierOutput | null {
       sentiment,
       accuracy,
       accuracyNotes: typeof raw.accuracyNotes === "string" ? raw.accuracyNotes.trim() : "",
+      ambiguity: typeof raw.ambiguity === "string" && raw.ambiguity.trim() ? raw.ambiguity.trim().slice(0, 300) : null,
       businesses,
     };
   } catch {
@@ -277,6 +282,7 @@ export function mergeAnalysis(
     sentiment: classifier ? (mentioned ? classifier.sentiment : "not_applicable") : null,
     accuracy: classifier ? (mentioned ? classifier.accuracy : "not_applicable") : null,
     accuracyNotes: classifier?.accuracyNotes || null,
+    ambiguity: classifier?.ambiguity ?? null,
     competitors,
     classifierUsed: classifier !== null,
   };

@@ -53,7 +53,7 @@ describe("analyzeDeterministic", () => {
     const b = analyzeDeterministic("RSM Karate is a well-reviewed Kenpo dojo. I don't have information about its pricing.", "RSM Karate", null);
     expect(b.mentioned).toBe(true);
     expect(b.echoOnly).toBe(false);
-    const merged = mergeAnalysis(a, { mentioned: true, sentiment: "neutral", accuracy: "unverifiable", accuracyNotes: "", businesses: [] }, "RSM Karate");
+    const merged = mergeAnalysis(a, { mentioned: true, sentiment: "neutral", accuracy: "unverifiable", accuracyNotes: "", ambiguity: null, businesses: [] }, "RSM Karate");
     expect(merged.mentioned).toBe(false);
   });
 

@@ -43,6 +43,11 @@ export function ExecutiveSummary({ data }: { data: ReportData }) {
               ))}
             </ul>
           )}
+          {audit.ambiguity && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <span className="font-semibold">Name clash:</span> {audit.ambiguity} Check the Evidence Explorer for which answers refer to someone else.
+            </p>
+          )}
         </div>
       </div>
     </Section>

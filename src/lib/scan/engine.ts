@@ -483,6 +483,8 @@ async function runUnit(
             mentionCount: analysis.mentionCount,
             listRank: analysis.listRank,
             listItemCount: analysis.listItemCount,
+            echoOnly: analysis.echoOnly,
+            ambiguity: analysis.ambiguity,
             classifierUsed: analysis.classifierUsed,
             classifierModel: classifier?.model ?? null,
           },
@@ -547,6 +549,7 @@ async function runFinalize(audit: AuditRow): Promise<void> {
 
     const engineStatuses = await reconcileEngineStatuses(audit, runs);
     const site = (siteCheck?.raw as SiteScanResult | null) ?? null;
+    const ambiguity = detectAmbiguity(runs);
 
     const input: ScoringInput = {
       businessName: audit.resolvedName ?? "",
@@ -633,6 +636,7 @@ async function runFinalize(audit: AuditRow): Promise<void> {
           stage: "done",
           score: output.score,
           scoringVersion: output.version,
+          ambiguity,
           completedAt: new Date(),
           lastProgressAt: new Date(),
           error: null,
@@ -647,6 +651,18 @@ async function runFinalize(audit: AuditRow): Promise<void> {
 }
 
 type RunWithCitations = Prisma.EngineRunGetPayload<{ include: { citations: true } }>;
+
+/** Reports a name clash when at least two answers describe a different business with the same or a similar name. */
+function detectAmbiguity(runs: RunWithCitations[]): string | null {
+  const notes = runs
+    .map((r) => (r.analysis as { ambiguity?: string | null } | null)?.ambiguity ?? null)
+    .filter((n): n is string => Boolean(n));
+  if (notes.length < 2) return null;
+  const counts = new Map<string, number>();
+  for (const n of notes) counts.set(n, (counts.get(n) ?? 0) + 1);
+  const [note] = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
+  return `${notes.length} of ${runs.length} answers appear to describe a different business with a similar name. ${note}`;
+}
 
 function aggregateCompetitors(auditId: string, runs: RunWithCitations[]): Prisma.CompetitorDetectedCreateManyInput[] {
   const map = new Map<string, { names: Map<string, number>; domain: string | null; mentionCount: number; runs: Set<string>; engines: Set<string> }>();

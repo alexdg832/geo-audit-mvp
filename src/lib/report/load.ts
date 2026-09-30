@@ -71,6 +71,7 @@ export interface ReportData {
     domain: string | null;
     location: string | null;
     category: string | null;
+    ambiguity: string | null;
     createdAt: string;
     completedAt: string | null;
     isMock: boolean;
@@ -128,6 +129,7 @@ export async function loadReport(auditId: string): Promise<ReportData | null> {
       domain: audit.resolvedDomain,
       location: audit.resolvedLocation,
       category: audit.category,
+      ambiguity: audit.ambiguity,
       createdAt: audit.createdAt.toISOString(),
       completedAt: audit.completedAt?.toISOString() ?? null,
       isMock: audit.isMock,

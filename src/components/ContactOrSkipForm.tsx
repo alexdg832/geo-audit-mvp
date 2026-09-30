@@ -80,7 +80,7 @@ export function ContactOrSkipForm({ auditId }: { auditId: string }) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className={inputClass}
-            placeholder="At least 6 characters"
+            placeholder="At least 8 characters"
           />
           <p className="mt-1 text-xs text-stone-500">This becomes your dashboard login.</p>
         </div>

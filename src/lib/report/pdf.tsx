@@ -1,7 +1,8 @@
 import { Document, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
 import { PILLARS } from "@/lib/scoring";
 import { TIER_META } from "@/lib/scan/sources";
-import type { ReportData } from "./load";
+import type { ReportData } from "./format";
+import { distinctSources, groupCitationsByUrl, pdfSafe } from "./format";
 
 const styles = StyleSheet.create({
   page: { padding: 40, fontSize: 10, fontFamily: "Helvetica", color: "#1c1917", lineHeight: 1.4 },
@@ -38,13 +39,17 @@ function Footer({ data }: { data: ReportData }) {
   );
 }
 
-export function ReportPdf({ data, unlocked }: { data: ReportData; unlocked: boolean }) {
+export function ReportPdf({ data: raw, unlocked }: { data: ReportData; unlocked: boolean }) {
+  // The built-in Helvetica only draws WinAnsi; engine text (arrows, check marks, emoji, other scripts)
+  // would otherwise print as wrong or missing glyphs, so every string is sanitised once up front.
+  const data = pdfSafe(raw);
   const { report, audit } = data;
   const completed = data.runs.filter((r) => r.status === "complete");
   const mentioned = completed.filter((r) => r.mentioned);
   const live = data.engines.filter((e) => e.status === "live");
-  const allCitations = data.runs.flatMap((r) => r.citations.map((c) => ({ ...c, mentioned: Boolean(r.mentioned) })));
-  const aboutYou = allCitations.filter((c) => c.mentioned);
+  // One entry per URL: engines emit a citation row per inline marker, so rows overcount sources.
+  const sources = distinctSources(data.runs);
+  const aboutYou = sources.filter((s) => s.mentioned);
   const tierCounts = [1, 2, 3, 4].map((t) => ({ tier: t, count: aboutYou.filter((c) => c.tier === t).length }));
   const topDomains = Array.from(
     aboutYou.reduce((m, c) => m.set(c.domain, (m.get(c.domain) ?? 0) + 1), new Map<string, number>()).entries()
@@ -84,7 +89,7 @@ export function ReportPdf({ data, unlocked }: { data: ReportData; unlocked: bool
             <Text style={styles.h3}>Verdict</Text>
             <Text>{report.verdict}</Text>
             <Text style={[styles.muted, { marginTop: 6 }]}>
-              Engines live: {live.map((e) => e.label).join(", ") || "none"} · answers collected: {completed.length} · answers naming you: {mentioned.length} · sources traced: {allCitations.length}
+              Engines live: {live.map((e) => e.label).join(", ") || "none"} · answers collected: {completed.length} · answers naming you: {mentioned.length} · sources traced: {sources.length}
             </Text>
             {report.caps.map((c) => (
               <Text key={c.key} style={{ color: "#991b1b", marginTop: 4 }}>
@@ -99,7 +104,7 @@ export function ReportPdf({ data, unlocked }: { data: ReportData; unlocked: bool
         {report.criticalFailures.map((f, i) => (
           <View key={f.key} style={styles.redCard}>
             <Text style={{ fontFamily: "Helvetica-Bold", color: "#7f1d1d" }}>
-              {i + 1}. {f.title} (−{f.pointsLost} pts)
+              {i + 1}. {f.title} (-{f.pointsLost} pts)
             </Text>
             <Text>{f.detail}</Text>
           </View>
@@ -167,7 +172,7 @@ export function ReportPdf({ data, unlocked }: { data: ReportData; unlocked: bool
         )}
         {topDomains.map(([domain, count]) => (
           <Text key={domain}>
-            • {domain} — {count} citation{count === 1 ? "" : "s"}
+            • {domain} — {count} source{count === 1 ? "" : "s"}
           </Text>
         ))}
 
@@ -233,14 +238,18 @@ export function ReportPdf({ data, unlocked }: { data: ReportData; unlocked: bool
             {r.status === "complete" && (r.noCitations ? (
               <Text style={styles.muted}>No source provided by this engine.</Text>
             ) : (
-              r.citations.map((c, i) => (
-                <Text key={c.id} style={{ fontSize: 8.5 }}>
-                  {i + 1}. [Tier {c.tier}
-                  {c.isBusinessOwned ? " · yours" : ""}] {c.title ? `${c.title} — ` : ""}
-                  {c.url}
-                  {c.passageText ? ` — supports: “${c.passageText.length > 160 ? `${c.passageText.slice(0, 160)}…` : c.passageText}”` : ""}
-                </Text>
-              ))
+              groupCitationsByUrl(r.citations).map((g) => {
+                const passages = g.citations.map((c) => c.passageText).filter((p): p is string => Boolean(p));
+                return (
+                  <Text key={g.citations[0].id} style={{ fontSize: 8.5 }}>
+                    {g.index + 1}. [Tier {g.tier}
+                    {g.isBusinessOwned ? " · yours" : ""}] {g.title ? `${g.title} — ` : ""}
+                    {g.url}
+                    {passages[0] ? ` — supports: “${passages[0].length > 160 ? `${passages[0].slice(0, 160)}…` : passages[0]}”` : ""}
+                    {passages.length > 1 ? ` (+${passages.length - 1} more passage${passages.length === 2 ? "" : "s"})` : ""}
+                  </Text>
+                );
+              })
             ))}
           </View>
         ))}

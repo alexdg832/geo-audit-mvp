@@ -38,7 +38,11 @@ function stageStatus(stageKey: string, current: string | null, status: string): 
   const order = STAGES.map((s) => s.key);
   const currentIndex = STAGES.findIndex((s) => s.matches.includes(current ?? ""));
   const index = order.indexOf(stageKey);
-  if (status === "failed") return index <= currentIndex ? "failed" : "pending";
+  if (status === "failed") {
+    // failScan stores stage "done", which no step matches; pin the failure on the last step so it is visible.
+    const failedIndex = currentIndex === -1 ? STAGES.length - 1 : currentIndex;
+    return index < failedIndex ? "done" : index === failedIndex ? "failed" : "pending";
+  }
   if (index < currentIndex) return "done";
   if (index === currentIndex) return "in_progress";
   return "pending";
@@ -48,34 +52,39 @@ export function ScanProgress({ auditId, initial }: { auditId: string; initial: T
   const [state, setState] = useState<TickResult>(initial);
   const [error, setError] = useState<string | null>(null);
   const [stopped, setStopped] = useState(initial.status === "failed");
+  // Bumped by Retry; the polling effect restarts when it changes. The `initial` prop is deliberately
+  // not a dependency: a server re-render must not restart the loop while one is already running.
+  const [attempt, setAttempt] = useState(0);
   const router = useRouter();
   const failures = useRef(0);
-  const cancelled = useRef(false);
+  // Latest tick seen, so a restart resumes from it rather than from the first server snapshot.
+  const latest = useRef(initial);
 
-  const tick = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/audits/${auditId}/tick`, { method: "POST", cache: "no-store" });
-      if (!res.ok) throw new Error(`Tick failed (${res.status})`);
-      const next = (await res.json()) as TickResult;
-      failures.current = 0;
-      setError(null);
-      return next;
-    } catch (err) {
-      failures.current += 1;
-      setError(err instanceof Error ? err.message : "Connection problem");
-      return null;
-    }
+  const tick = useCallback(async (): Promise<TickResult> => {
+    const res = await fetch(`/api/audits/${auditId}/tick`, { method: "POST", cache: "no-store" });
+    if (!res.ok) throw new Error(`Tick failed (${res.status})`);
+    return (await res.json()) as TickResult;
   }, [auditId]);
 
   useEffect(() => {
-    cancelled.current = false;
+    // Local to this effect run (not a shared ref): once cleanup flips it, a tick still in flight from
+    // this run can neither touch state nor schedule another tick, so StrictMode's double mount and
+    // Retry cannot leave two loops polling. A tick can take tens of seconds, so one is usually in flight.
+    let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const loop = async (previous: TickResult) => {
-      if (cancelled.current) return;
-      const next = await tick();
-      if (cancelled.current) return;
+      let next: TickResult | null = null;
+      let message: string | null = null;
+      try {
+        next = await tick();
+      } catch (err) {
+        message = err instanceof Error ? err.message : "Connection problem";
+      }
+      if (cancelled) return;
       if (!next) {
+        failures.current += 1;
+        setError(message);
         if (failures.current >= 20) {
           setStopped(true);
           return;
@@ -83,6 +92,9 @@ export function ScanProgress({ auditId, initial }: { auditId: string; initial: T
         timer = setTimeout(() => loop(previous), Math.min(15_000, 1_000 * 2 ** failures.current));
         return;
       }
+      failures.current = 0;
+      setError(null);
+      latest.current = next;
       setState(next);
       if (next.status === "complete") {
         router.push(`/audit/${auditId}/results`);
@@ -96,16 +108,17 @@ export function ScanProgress({ auditId, initial }: { auditId: string; initial: T
       timer = setTimeout(() => loop(next), progressed ? 250 : 2_500);
     };
 
-    if (initial.status === "complete") {
+    const start = latest.current;
+    if (start.status === "complete") {
       router.push(`/audit/${auditId}/results`);
-    } else if (initial.status !== "failed") {
-      void loop(initial);
+    } else if (start.status !== "failed") {
+      void loop(start);
     }
     return () => {
-      cancelled.current = true;
+      cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [auditId, initial, router, tick]);
+  }, [auditId, attempt, router, tick]);
 
   const done = state.units.complete + state.units.failed + state.units.skipped;
 
@@ -163,7 +176,7 @@ export function ScanProgress({ auditId, initial }: { auditId: string; initial: T
               failures.current = 0;
               setStopped(false);
               setError(null);
-              router.refresh();
+              setAttempt((a) => a + 1);
             }}
           >
             Retry

@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/Badge";
 import { LinkButton } from "@/components/ui/Button";
-import type { ReportData } from "@/lib/report/load";
+import type { ReportData } from "@/lib/report/format";
 import { PILLARS } from "@/lib/scoring";
 import { Section } from "./Section";
 

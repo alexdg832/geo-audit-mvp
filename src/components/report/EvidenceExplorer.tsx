@@ -1,26 +1,29 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, tierTone } from "@/components/ui/Badge";
-import type { CitationView, RunView } from "@/lib/report/load";
-import { safeHref } from "@/lib/report/load";
+import type { CitationGroup, RunView } from "@/lib/report/format";
+import { groupCitationsByUrl, safeHref } from "@/lib/report/format";
 import { promptKindLabel } from "@/lib/scan/prompts";
 
 interface Segment {
   start: number;
   end: number;
-  citations: number[];
+  /** Indexes into the answer's source groups (one per URL), so superscripts match the numbered list below. */
+  sources: number[];
   mention: boolean;
 }
 
-function buildSegments(text: string, citations: CitationView[], mention: { start: number | null; end: number | null }): Segment[] {
+function buildSegments(text: string, groups: CitationGroup[], mention: { start: number | null; end: number | null }): Segment[] {
   const bounds = new Set<number>([0, text.length]);
-  citations.forEach((c) => {
-    if (c.passageStart !== null && c.passageEnd !== null) {
-      bounds.add(Math.max(0, Math.min(text.length, c.passageStart)));
-      bounds.add(Math.max(0, Math.min(text.length, c.passageEnd)));
+  for (const g of groups) {
+    for (const c of g.citations) {
+      if (c.passageStart !== null && c.passageEnd !== null) {
+        bounds.add(Math.max(0, Math.min(text.length, c.passageStart)));
+        bounds.add(Math.max(0, Math.min(text.length, c.passageEnd)));
+      }
     }
-  });
+  }
   if (mention.start !== null && mention.end !== null) {
     bounds.add(mention.start);
     bounds.add(mention.end);
@@ -31,27 +34,26 @@ function buildSegments(text: string, citations: CitationView[], mention: { start
     const start = sorted[i];
     const end = sorted[i + 1];
     if (end <= start) continue;
-    const covering = citations
-      .map((c, idx) => ({ c, idx }))
-      .filter(({ c }) => c.passageStart !== null && c.passageEnd !== null && c.passageStart <= start && c.passageEnd >= end)
-      .map(({ idx }) => idx);
+    const covering = groups
+      .filter((g) => g.citations.some((c) => c.passageStart !== null && c.passageEnd !== null && c.passageStart <= start && c.passageEnd >= end))
+      .map((g) => g.index);
     const inMention = mention.start !== null && mention.end !== null && mention.start <= start && mention.end >= end;
-    segments.push({ start, end, citations: covering, mention: inMention });
+    segments.push({ start, end, sources: covering, mention: inMention });
   }
   return segments;
 }
 
-function Answer({ run, active, onHover }: { run: RunView; active: number | null; onHover: (i: number | null) => void }) {
+function Answer({ run, groups, active, onHover }: { run: RunView; groups: CitationGroup[]; active: number | null; onHover: (i: number | null) => void }) {
   const text = run.answerText ?? "";
-  const segments = useMemo(() => buildSegments(text, run.citations, { start: run.mentionStart, end: run.mentionEnd }), [text, run.citations, run.mentionStart, run.mentionEnd]);
+  const segments = useMemo(() => buildSegments(text, groups, { start: run.mentionStart, end: run.mentionEnd }), [text, groups, run.mentionStart, run.mentionEnd]);
   return (
     <div className="whitespace-pre-wrap rounded-xl bg-stone-50 p-4 text-sm leading-relaxed text-stone-800">
       {segments.map((seg) => {
         const slice = text.slice(seg.start, seg.end);
-        const isActive = active !== null && seg.citations.includes(active);
+        const isActive = active !== null && seg.sources.includes(active);
         const classes = [
           seg.mention ? "rounded bg-indigo-200 px-0.5 font-semibold text-stone-900" : "",
-          seg.citations.length && !seg.mention ? "rounded bg-amber-100 px-0.5" : "",
+          seg.sources.length && !seg.mention ? "rounded bg-amber-100 px-0.5" : "",
           isActive ? "ring-2 ring-amber-500" : "",
         ]
           .filter(Boolean)
@@ -61,12 +63,12 @@ function Answer({ run, active, onHover }: { run: RunView; active: number | null;
           <mark
             key={seg.start}
             className={classes}
-            title={seg.citations.length ? `Supported by source ${seg.citations.map((i) => i + 1).join(", ")}` : "Mention of your business"}
-            onMouseEnter={() => seg.citations.length && onHover(seg.citations[0])}
+            title={seg.sources.length ? `Supported by source ${seg.sources.map((i) => i + 1).join(", ")}` : "Mention of your business"}
+            onMouseEnter={() => seg.sources.length && onHover(seg.sources[0])}
             onMouseLeave={() => onHover(null)}
           >
             {slice}
-            {seg.citations.length > 0 && <sup className="ml-0.5 text-[10px] text-amber-800">{seg.citations.map((i) => i + 1).join(",")}</sup>}
+            {seg.sources.length > 0 && <sup className="ml-0.5 text-[10px] text-amber-800">{seg.sources.map((i) => i + 1).join(",")}</sup>}
           </mark>
         );
       })}
@@ -77,8 +79,25 @@ function Answer({ run, active, onHover }: { run: RunView; active: number | null;
 function RunCard({ run, businessName }: { run: RunView; businessName: string }) {
   const [active, setActive] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
+  // True while the collapsed answer is actually cut off, so the toggle appears exactly when it is needed
+  // (a short markdown list can exceed the 12rem cap long before the old 600-character threshold).
+  const [clipped, setClipped] = useState(false);
+  const answerRef = useRef<HTMLDivElement>(null);
+  // One entry per URL: engines emit a citation row per inline marker, so a page cited in four
+  // sentences would otherwise be listed and numbered four times.
+  const groups = useMemo(() => groupCitationsByUrl(run.citations), [run.citations]);
   const sentimentTone = run.sentiment === "positive" ? "green" : run.sentiment === "negative" ? "red" : run.sentiment === "mixed" ? "amber" : "neutral";
   const accuracyTone = run.accuracy === "accurate" ? "green" : run.accuracy === "inaccurate" ? "red" : "neutral";
+
+  useEffect(() => {
+    const el = answerRef.current;
+    if (open || !el || typeof ResizeObserver === "undefined") return;
+    // ResizeObserver fires once on observe, so this also measures the initial layout.
+    const observer = new ResizeObserver(() => setClipped(el.scrollHeight > el.clientHeight + 1));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [open]);
+
   return (
     <article className="rounded-xl border border-stone-200 p-4">
       <header className="flex flex-wrap items-center justify-between gap-2">
@@ -110,10 +129,10 @@ function RunCard({ run, businessName }: { run: RunView; businessName: string }) 
 
       {run.status === "complete" && run.answerText ? (
         <div className="mt-3">
-          <div className={open ? "" : "max-h-48 overflow-hidden"}>
-            <Answer run={run} active={active} onHover={setActive} />
+          <div ref={answerRef} className={open ? "" : "max-h-48 overflow-hidden"}>
+            <Answer run={run} groups={groups} active={active} onHover={setActive} />
           </div>
-          {(run.answerText.length > 600) && (
+          {(open || clipped) && (
             <button type="button" onClick={() => setOpen((o) => !o)} className="mt-1 text-xs font-medium text-accent hover:underline">
               {open ? "Show less" : "Show full answer"}
             </button>
@@ -136,24 +155,26 @@ function RunCard({ run, businessName }: { run: RunView; businessName: string }) 
             <p className="mt-1 text-sm text-stone-600">No source provided by this engine.</p>
           ) : (
             <ol className="mt-1 space-y-1.5">
-              {run.citations.map((c, i) => {
-                const href = safeHref(c.url);
+              {groups.map((g) => {
+                const href = safeHref(g.url);
+                const noPassage = g.citations.every((c) => c.passageText === null && c.citedText === null);
                 return (
-                  <li key={c.id} className={`flex flex-wrap items-start gap-2 rounded-lg px-2 py-1 text-sm ${active === i ? "bg-amber-50" : ""}`} onMouseEnter={() => setActive(i)} onMouseLeave={() => setActive(null)}>
-                    <span className="w-5 shrink-0 text-xs text-stone-500">{i + 1}.</span>
-                    <Badge tone={tierTone(c.tier)} title={c.tierReason ?? undefined}>
-                      Tier {c.tier}{c.isBusinessOwned ? " · yours" : ""}
+                  <li key={g.citations[0].id} className={`flex flex-wrap items-start gap-2 rounded-lg px-2 py-1 text-sm ${active === g.index ? "bg-amber-50" : ""}`} onMouseEnter={() => setActive(g.index)} onMouseLeave={() => setActive(null)}>
+                    <span className="w-5 shrink-0 text-xs text-stone-500">{g.index + 1}.</span>
+                    <Badge tone={tierTone(g.tier)} title={g.tierReason ?? undefined}>
+                      Tier {g.tier}{g.isBusinessOwned ? " · yours" : ""}
                     </Badge>
                     <span className="min-w-0 flex-1 break-words">
                       {href ? (
                         <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
-                          {c.title || c.domain}
+                          {g.title || g.domain}
                         </a>
                       ) : (
-                        <span>{c.title || c.domain}</span>
+                        <span>{g.title || g.domain}</span>
                       )}
-                      <span className="text-stone-500"> · {c.domain}</span>
-                      {c.passageText === null && c.citedText === null && <span className="text-xs text-stone-400"> · no passage span from this engine</span>}
+                      <span className="text-stone-500"> · {g.domain}</span>
+                      {g.citations.length > 1 && <span className="text-xs text-stone-400"> · cited {g.citations.length} times in this answer</span>}
+                      {noPassage && <span className="text-xs text-stone-400"> · no passage span from this engine</span>}
                     </span>
                   </li>
                 );

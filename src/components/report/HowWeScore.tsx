@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/Badge";
-import type { ReportData } from "@/lib/report/load";
+import type { ReportData } from "@/lib/report/format";
 import { CAP_DEFINITIONS, GRADE_BANDS, PILLARS, SCORING_VERSION } from "@/lib/scoring";
 import { Section } from "./Section";
 import { titleFor } from "./PillarBreakdown";

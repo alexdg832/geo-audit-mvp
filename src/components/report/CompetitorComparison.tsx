@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/Badge";
-import type { ReportData } from "@/lib/report/load";
+import type { ReportData } from "@/lib/report/format";
 import { Section } from "./Section";
 
 export function CompetitorComparison({ data }: { data: ReportData }) {

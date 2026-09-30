@@ -1,6 +1,7 @@
 import { ScoreGauge } from "@/components/ScoreGauge";
 import { Badge, confidenceTone } from "@/components/ui/Badge";
-import type { ReportData } from "@/lib/report/load";
+import type { ReportData } from "@/lib/report/format";
+import { distinctSources } from "@/lib/report/format";
 import { Section } from "./Section";
 
 export function ExecutiveSummary({ data }: { data: ReportData }) {
@@ -26,7 +27,8 @@ export function ExecutiveSummary({ data }: { data: ReportData }) {
             <Stat label="Engines live" value={`${live.length}`} note={live.map((e) => e.label).join(", ") || "none"} />
             <Stat label="Answers collected" value={`${completed.length}`} note={`${data.prompts.length} prompts × ${audit.runsPerPrompt} runs`} />
             <Stat label="Answers naming you" value={`${mentioned.length}`} note={completed.length ? `${Math.round((mentioned.length / completed.length) * 100)}% of answers` : "—"} />
-            <Stat label="Sources traced" value={`${runs.reduce((s, r) => s + r.citations.length, 0)}`} note={`${runs.filter((r) => r.status === "complete" && r.noCitations).length} answers gave none`} />
+            {/* Distinct URLs: engines emit one citation row per inline marker, so rows overcount sources. */}
+            <Stat label="Sources traced" value={`${distinctSources(runs).length}`} note={`${runs.filter((r) => r.status === "complete" && r.noCitations).length} answers gave none`} />
           </dl>
           {(notConfigured.length > 0 || errored.length > 0) && (
             <p className="text-xs text-stone-500">

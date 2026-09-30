@@ -3,103 +3,11 @@ import { ENGINE_LABELS, type EngineId } from "@/lib/providers/types";
 import type { PromptKind } from "@/lib/scan/prompts";
 import type { SiteScanResult } from "@/lib/scan/siteScan";
 import type { CapApplied, CostOfInaction, CriticalFailure, RoadmapItem } from "@/lib/scoring/types";
+import type { BreakdownView, ReportData, RunView } from "./format";
 
-export interface CitationView {
-  id: string;
-  index: number;
-  url: string;
-  domain: string;
-  title: string | null;
-  tier: 1 | 2 | 3 | 4;
-  tierReason: string | null;
-  isBusinessOwned: boolean;
-  passageStart: number | null;
-  passageEnd: number | null;
-  passageText: string | null;
-  citedText: string | null;
-}
-
-export interface RunView {
-  id: string;
-  engine: string;
-  engineLabel: string;
-  model: string | null;
-  promptId: string;
-  promptIndex: number;
-  promptKind: PromptKind;
-  promptText: string;
-  runIndex: number;
-  status: string;
-  answerText: string | null;
-  latencyMs: number | null;
-  cached: boolean;
-  noCitations: boolean;
-  error: string | null;
-  mentioned: boolean | null;
-  mentionPosition: number | null;
-  mentionStart: number | null;
-  mentionEnd: number | null;
-  sentiment: string | null;
-  accuracy: string | null;
-  accuracyNotes: string | null;
-  competitors: { name: string; domain: string | null; position: number }[];
-  completedAt: string | null;
-  citations: CitationView[];
-}
-
-export interface BreakdownView {
-  id: string;
-  pillar: string;
-  metric: string;
-  label: string;
-  weight: number;
-  value: number;
-  points: number;
-  pointsLost: number;
-  confidence: string;
-  finding: string;
-  evidence: { runIds?: string[]; citationIds?: string[]; siteCheckFields?: string[]; competitorIds?: string[]; note?: string };
-  order: number;
-}
-
-export interface ReportData {
-  audit: {
-    id: string;
-    businessId: string;
-    businessName: string;
-    website: string | null;
-    domain: string | null;
-    location: string | null;
-    category: string | null;
-    ambiguity: string | null;
-    createdAt: string;
-    completedAt: string | null;
-    isMock: boolean;
-    scanVersion: string;
-    scoringVersion: string | null;
-    status: string;
-    runsPerPrompt: number;
-  };
-  report: {
-    score: number;
-    grade: string;
-    confidence: string;
-    verdict: string;
-    pillars: { key: string; label: string; weight: number; score: number; confidence: string }[];
-    caps: CapApplied[];
-    criticalFailures: CriticalFailure[];
-    roadmap: RoadmapItem[];
-    costOfInaction: CostOfInaction | null;
-    generatedAt: string;
-  };
-  breakdowns: BreakdownView[];
-  engines: { engine: string; label: string; status: string; model: string | null; callsMade: number; error: string | null }[];
-  prompts: { id: string; index: number; kind: PromptKind; text: string }[];
-  runs: RunView[];
-  competitors: { id: string; name: string; domain: string | null; mentionCount: number; runCount: number; engines: string[]; evidenceRunIds: string[] }[];
-  site: SiteScanResult | null;
-  hasAccount: boolean;
-}
+// The view-model types and safeHref live in ./format (no db import) so client components can use
+// them without dragging Prisma into the browser bundle; re-exported here for server-side callers.
+export type { BreakdownView, CitationView, ReportData, RunView } from "./format";
 
 export async function loadReport(auditId: string): Promise<ReportData | null> {
   const audit = await prisma.audit.findUnique({
@@ -228,14 +136,4 @@ export async function loadReport(auditId: string): Promise<ReportData | null> {
     site: (audit.siteCheck?.raw as SiteScanResult | null) ?? null,
     hasAccount: audit.business._count.users > 0,
   };
-}
-
-/** Only http(s) links are rendered as anchors; engine output can contain anything. */
-export function safeHref(url: string): string | null {
-  try {
-    const u = new URL(url);
-    return u.protocol === "http:" || u.protocol === "https:" ? u.toString() : null;
-  } catch {
-    return null;
-  }
 }

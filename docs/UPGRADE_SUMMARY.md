@@ -10,8 +10,8 @@ Branch: `feat/geo-audit-engine-upgrade` (local commits only, nothing pushed). Ba
 - Local development database: embedded Postgres (`npm run db:dev`), `prisma.config.ts` loads `.env.local` for the Prisma CLI, and the seed refuses to wipe a non-local database.
 - Admin Server Actions now check the admin session; account claiming requires the signed cookie issued when the audit was started and refuses already-claimed businesses; re-running an audit requires ownership or admin; anonymous starts are rate limited per hashed IP and globally; the site fetcher blocks private address ranges and caps body size and time; security headers are set in `next.config.ts`; citation links are rendered only for `http(s)` URLs.
 
-**Data model** ([prisma/schema.prisma](../prisma/schema.prisma), migrations `20260929000000_init` and `20260930001445_scan_evidence_scoring`)
-- `Audit` is the scan record (extended, not replaced, so every existing URL and dashboard query keeps working). New tables: `ScanEngine`, `ScanPrompt`, `EngineRun`, `Citation`, `SiteCheck`, `CompetitorDetected`, `ScoreBreakdown`, `Report`, `ProviderCache`, `ProviderEvent`.
+**Data model** ([prisma/schema.prisma](../prisma/schema.prisma), migrations `20260929000000_init`, `20260930001445_scan_evidence_scoring`, `20260930020000_support_email`)
+- `Audit` is the scan record (extended, not replaced, so every existing URL and dashboard query keeps working). New tables: `ScanEngine`, `ScanPrompt`, `EngineRun`, `Citation`, `SiteCheck`, `CompetitorDetected`, `ScoreBreakdown`, `Report`, `ProviderCache`, `ProviderEvent`, and for customer service `SupportThread`, `SupportMessage`, `EmailEvent`.
 - Build now runs `prisma migrate deploy` instead of `prisma db push --accept-data-loss`.
 
 **Provider layer** ([src/lib/providers/](../src/lib/providers/))
@@ -33,6 +33,13 @@ Branch: `feat/geo-audit-engine-upgrade` (local commits only, nothing pushed). Ba
 
 **Removed**: the seeded-random mock pipeline (`runAudit`, `mocks/*`, `steps`, `recommendations`, the old website check) — 75 of 100 points used to come from fabricated findings.
 
+**Onboarding emails and support pipeline** ([src/lib/email/](../src/lib/email/), [src/lib/actions/support.ts](../src/lib/actions/support.ts), migration `20260930020000_support_email`)
+- Resend transport over plain `fetch` (documented `POST /emails` body, `Idempotency-Key`), every attempt recorded in `EmailEvent` as sent / failed / skipped with the provider's reason; keys are never logged. Emails are queued with `after()` so they never delay or fail a form.
+- Team alerts to `ADMIN_NOTIFY_EMAIL`: audit started (the first form a visitor fills), new lead (account form: contact, goals, score, link to the client), new support message. Client emails: welcome (with the Calendly link when they asked for a call), receipt of a new conversation, and a copy of each team reply. `reply_to` is set so an email reply reaches the other side directly.
+- Support threads (`SupportThread`, `SupportMessage`): clients write and read everything at `/dashboard/support` (threads, replies, their goals, booking); the team answers from `/admin/support` (inbox with status filters, thread view, close/reopen). A team reply also creates an in-app notification. Client messages are capped at 20 per hour per business.
+- Admin **Provider status** gained an email delivery card (configuration, sandbox warning, last 15 emails). The Calendly link is now `NEXT_PUBLIC_CALENDLY_URL` with an inline embed when set.
+- Verified on 2026-09-30 against the live Resend API: the key works; with no verified domain Resend refuses recipients other than the account owner (HTTP 403, recorded in the log), which is the expected sandbox behaviour until a domain is verified.
+
 ## Engines live during testing
 
 None. Every adapter was exercised against its real endpoint on 2026-09-29 and each failed before returning an answer, for reasons outside the code:
@@ -50,14 +57,16 @@ The circuit breaker handled all four correctly (each engine tripped on first con
 
 - Any real scan: at least one working engine (see the table). With none live, scans complete with the `no_live_engines` cap (score ≤ 40, confidence low) and the report says so.
 - The answer classifier (sentiment, accuracy, competitor extraction) needs a search-free completion from OpenAI, Anthropic or Gemini; without one, mentions still come from text matching and position falls back to list rank.
-- Email delivery (`RESEND_API_KEY`) is reserved but not wired.
+- Email to clients needs a verified sending domain in Resend plus `RESEND_FROM_EMAIL`; team alerts need `ADMIN_NOTIFY_EMAIL` (until the domain is verified, that must be the Resend account owner's address).
 
 ## Deployment checklist
 
-1. Add the provider keys and `SESSION_SECRET`/`ADMIN_PASSWORD` to the Vercel project (never `MOCK_MODE` on Preview/Production; the app refuses it). Remove the now-unused `AUDIT_DEMO_FAST`.
-2. Baseline the existing databases once before the first deploy of this branch: `prisma migrate resolve --applied 20260929000000_init` against Production and Preview (using `DATABASE_URL_UNPOOLED`). `prisma migrate deploy` then applies `20260930001445_scan_evidence_scoring`.
+Full walkthrough: [DEPLOY.md](DEPLOY.md).
+
+1. Add the provider keys, `SESSION_SECRET`/`ADMIN_PASSWORD`, `RESEND_API_KEY`, `ADMIN_NOTIFY_EMAIL` and `NEXT_PUBLIC_CALENDLY_URL` to the Vercel project (never `MOCK_MODE` on Preview/Production; the app refuses it). Remove the now-unused `AUDIT_DEMO_FAST`.
+2. Baseline the existing databases once before the first deploy of this branch: `prisma migrate resolve --applied 20260929000000_init` against Production and Preview (using `DATABASE_URL_UNPOOLED`). `prisma migrate deploy` then applies `20260930001445_scan_evidence_scoring` and `20260930020000_support_email`.
 3. Keep the Vercel function limit at ≥ 120 s (the tick route exports `maxDuration = 120`).
-4. Replace the placeholder Calendly URL in `config/site.ts`.
+4. Verify a sending domain in Resend and set `RESEND_FROM_EMAIL` so client emails deliver.
 
 ## Known limitations
 
@@ -70,5 +79,5 @@ The circuit breaker handled all four correctly (each engine tripped on first con
 ## Next three improvements
 
 1. **Run one real scan per engine and calibrate**: confirm citation shapes and spans on live responses, then tune the classifier prompt and the trust-tier lists against real citations.
-2. **Scheduled sweep and notifications**: a Vercel Cron that resumes stalled scans and emails the report link (Resend) when a scan completes, so a closed tab never loses a paid audit.
+2. **Scheduled sweep and report email**: a Vercel Cron that resumes stalled scans and emails the report link when a scan completes (the Resend transport is in place), so a closed tab never loses a paid audit; plus Resend inbound webhooks so a client's email reply lands in the support thread.
 3. **Trend tracking**: keep per-business scan history (mention rate, share of voice, top competitor) and show the delta on the dashboard and in the report, which is the strongest retention hook for the service.

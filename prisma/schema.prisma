@@ -18,6 +18,7 @@ model Business {
   users         User[]
   truthBrief    TruthBrief?
   contentPushes ContentPush[]
+  supportThreads SupportThread[]
 }
 
 // One Audit row is one scan. Audits created before the scan engine keep the
@@ -146,6 +147,54 @@ model Notification {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Customer service: support threads between a client and the TrueSource team,
+// plus a log of every transactional email attempted (sent, failed or skipped).
+// ---------------------------------------------------------------------------
+
+model SupportThread {
+  id            String           @id @default(cuid())
+  businessId    String
+  business      Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  subject       String
+  status        String           @default("open") // open (waiting on us) | answered (waiting on the client) | closed
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  lastMessageAt DateTime         @default(now())
+  messages      SupportMessage[]
+
+  @@index([businessId, lastMessageAt])
+  @@index([status, lastMessageAt])
+}
+
+model SupportMessage {
+  id          String        @id @default(cuid())
+  threadId    String
+  thread      SupportThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  author      String // client | admin
+  authorName  String?
+  body        String
+  emailStatus String? // delivery of the email copy of this message: sent | failed | skipped
+  createdAt   DateTime      @default(now())
+
+  @@index([threadId, createdAt])
+}
+
+model EmailEvent {
+  id         String   @id @default(cuid())
+  kind       String // admin_audit_started | admin_new_lead | client_welcome | admin_support_message | client_support_receipt | client_support_reply
+  to         String
+  subject    String
+  status     String // sent | failed | skipped
+  providerId String?
+  error      String?
+  businessId String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([businessId, createdAt])
 }
 
 // ---------------------------------------------------------------------------

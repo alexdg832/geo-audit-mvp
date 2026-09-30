@@ -2,13 +2,26 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { prisma } from "@/lib/db";
 import { hashPassword } from "@/lib/auth/password";
 import { createUserSession } from "@/lib/auth/session";
 import { verifySignedToken } from "@/lib/auth/signedToken";
+import { notifyNewLead } from "@/lib/email/notify";
 import { ActionState } from "./types";
 
 const EMAIL_REGEX = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
+
+/** Team alert + welcome email, sent after the redirect so delivery never delays or fails sign-up. */
+function queueLeadEmails(userId: string, auditId: string, wantsCall: boolean): void {
+  after(async () => {
+    try {
+      await notifyNewLead(userId, auditId, wantsCall);
+    } catch (err) {
+      console.error("Lead emails failed", { userId, message: err instanceof Error ? err.message : String(err) });
+    }
+  });
+}
 
 async function holdsClaimCookie(auditId: string): Promise<boolean> {
   const store = await cookies();
@@ -59,6 +72,7 @@ export async function bookCallAction(auditId: string, _prevState: ActionState, f
   await prisma.contactRequest.create({
     data: { userId: result.userId, name: name || email, email, goals, wantsCall: true },
   });
+  queueLeadEmails(result.userId, auditId, true);
 
   redirect("/dashboard?booked=1");
 }
@@ -72,5 +86,6 @@ export async function skipContactAction(auditId: string, _prevState: ActionState
 
   const result = await createAccountForAudit(auditId, email, password);
   if ("error" in result) return { error: result.error };
+  queueLeadEmails(result.userId, auditId, false);
   redirect("/dashboard");
 }

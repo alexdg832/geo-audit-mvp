@@ -42,11 +42,13 @@ export function LinkButton({
   className = "",
   children,
   target,
-}: CommonProps & { href: string; target?: string }) {
+  rel,
+}: CommonProps & { href: string; target?: string; rel?: string }) {
   return (
     <Link
       href={href}
       target={target}
+      rel={rel}
       className={`${BASE_CLASSES} ${VARIANT_CLASSES[variant]} ${className}`}
     >
       {children}

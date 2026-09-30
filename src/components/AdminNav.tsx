@@ -4,6 +4,7 @@ import { adminLogoutAction } from "@/lib/actions/adminAuth";
 const LINKS = [
   { href: "/admin", label: "Clients" },
   { href: "/admin/scans", label: "Scans" },
+  { href: "/admin/support", label: "Support" },
   { href: "/admin/providers", label: "Provider status" },
 ];
 

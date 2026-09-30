@@ -6,6 +6,7 @@ import { after } from "next/server";
 import { getCurrentUser, isAdmin } from "@/lib/auth/session";
 import { createSignedToken } from "@/lib/auth/signedToken";
 import { prisma } from "@/lib/db";
+import { notifyAdminAuditStarted } from "@/lib/email/notify";
 import { hashClientIp } from "@/lib/providers/limits";
 import { advanceScan, checkScanRateLimit, createScan } from "@/lib/scan/engine";
 import { normalizeWebsiteUrl } from "@/lib/scan/fetcher";
@@ -45,6 +46,17 @@ function kickFirstTick(auditId: string): void {
   });
 }
 
+/** Team alert for the very first form a visitor fills in; sent after the redirect. */
+function queueAuditStartedEmail(auditId: string, rerun: boolean): void {
+  after(async () => {
+    try {
+      await notifyAdminAuditStarted(auditId, rerun);
+    } catch (err) {
+      console.error("Audit-started email failed", { auditId, message: err instanceof Error ? err.message : String(err) });
+    }
+  });
+}
+
 export async function startAuditAction(_prevState: ActionState, formData: FormData): Promise<ActionState> {
   const name = String(formData.get("name") || "").trim().slice(0, 200);
   const websiteInput = String(formData.get("website") || "").trim().slice(0, 2048);
@@ -75,6 +87,7 @@ export async function startAuditAction(_prevState: ActionState, formData: FormDa
   }
 
   await issueClaimCookie(auditId);
+  queueAuditStartedEmail(auditId, false);
   kickFirstTick(auditId);
   redirect(`/audit/${auditId}/running`);
 }
@@ -101,6 +114,7 @@ export async function rerunAuditAction(businessId: string) {
     location: business.location,
     requesterIpHash: await requesterIpHash(),
   });
+  queueAuditStartedEmail(auditId, true);
   kickFirstTick(auditId);
   redirect(`/audit/${auditId}/running`);
 }

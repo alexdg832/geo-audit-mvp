@@ -16,11 +16,12 @@ import { Button, LinkButton } from "@/components/ui/Button";
 // rerunAuditAction kicks the first scan tick with after(); it runs up to this limit.
 export const maxDuration = 120;
 
-export default async function DashboardPage() {
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ booked?: string }> }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  const { booked } = await searchParams;
 
-  const [latestAudit, runningAudit, contentPushes] = await Promise.all([
+  const [latestAudit, runningAudit, contentPushes, threadCount, repliesWaiting] = await Promise.all([
     prisma.audit.findFirst({
       where: { businessId: user.businessId, status: "complete" },
       orderBy: { completedAt: "desc" },
@@ -35,7 +36,16 @@ export default async function DashboardPage() {
       where: { businessId: user.businessId },
       orderBy: { createdAt: "desc" },
     }),
+    prisma.supportThread.count({ where: { businessId: user.businessId } }),
+    prisma.supportThread.count({ where: { businessId: user.businessId, status: "answered" } }),
   ]);
+
+  const supportSummary =
+    repliesWaiting > 0
+      ? `${repliesWaiting} ${repliesWaiting === 1 ? "reply is" : "replies are"} waiting for you.`
+      : threadCount > 0
+        ? `${threadCount} ${threadCount === 1 ? "conversation" : "conversations"} so far. Message us or book a call any time.`
+        : "Questions about your report or the fixes? Message us or book a call.";
 
   const pillars = (latestAudit?.report?.pillars as { key: string; label: string; weight: number; score: number }[] | undefined) ?? null;
 
@@ -53,6 +63,16 @@ export default async function DashboardPage() {
           </form>
         </div>
       </header>
+
+      {booked === "1" && (
+        <p className="mb-6 rounded-xl border border-green-200 bg-green-50 p-3 text-sm text-green-900">
+          Thanks! Our scheduler opened in a new tab. If it did not, you can book from the{" "}
+          <Link href="/dashboard/support" className="font-medium underline underline-offset-2">
+            support page
+          </Link>
+          . We have your goals and will be in touch by email.
+        </p>
+      )}
 
       <Card>
         <div className="flex flex-col items-center gap-8 sm:flex-row sm:items-start sm:justify-between">
@@ -90,6 +110,18 @@ export default async function DashboardPage() {
               </form>
             )}
           </div>
+        </div>
+      </Card>
+
+      <Card className="mt-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-stone-900">Support</h2>
+            <p className="mt-1 text-sm text-stone-600">{supportSummary}</p>
+          </div>
+          <LinkButton href="/dashboard/support" variant={repliesWaiting > 0 ? "primary" : "secondary"} className="shrink-0">
+            {repliesWaiting > 0 ? "Read replies" : "Contact us"}
+          </LinkButton>
         </div>
       </Card>
 

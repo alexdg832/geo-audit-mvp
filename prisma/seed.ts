@@ -22,6 +22,9 @@ async function main() {
   }
 
   await prisma.$transaction([
+    prisma.emailEvent.deleteMany(),
+    prisma.supportMessage.deleteMany(),
+    prisma.supportThread.deleteMany(),
     prisma.notification.deleteMany(),
     prisma.contentPush.deleteMany(),
     prisma.truthBrief.deleteMany(),
@@ -119,6 +122,33 @@ async function main() {
       { userId: user.id, message: `"${publishedPush.title}" status changed to Published.`, read: true },
       { userId: user.id, message: `"${inProgressPush.title}" status changed to In Progress.`, read: true },
     ],
+  });
+
+  // One support conversation so the client support page and the admin inbox are not empty.
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  const thread = await prisma.supportThread.create({
+    data: { businessId: business.id, subject: "ChatGPT gives out our old phone number", status: "answered", createdAt: twoHoursAgo, lastMessageAt: oneHourAgo },
+  });
+  await prisma.supportMessage.create({
+    data: {
+      threadId: thread.id,
+      author: "client",
+      authorName: user.email,
+      body: "Hi — the report shows ChatGPT quoting our old number from a forum post. What's the fastest way to get that corrected?",
+      emailStatus: "skipped",
+      createdAt: twoHoursAgo,
+    },
+  });
+  await prisma.supportMessage.create({
+    data: {
+      threadId: thread.id,
+      author: "admin",
+      authorName: "TrueSource",
+      body: "Thanks Dana. We've queued a Google Business Profile update and a schema fix (see your content push timeline). Engines usually pick the new number up within a few weeks; we'll re-scan and let you know.",
+      emailStatus: "skipped",
+      createdAt: oneHourAgo,
+    },
   });
 
   // Demo report: a complete mock-mode scan so the dashboard and admin views have real rows to show.

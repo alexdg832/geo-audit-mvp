@@ -8,6 +8,8 @@ import { TruthBriefForm } from "@/components/admin/TruthBriefForm";
 import { ContentPushForm } from "@/components/admin/ContentPushForm";
 import { ContentPushStatusSelect } from "@/components/admin/ContentPushStatusSelect";
 import { SendNotificationForm } from "@/components/admin/SendNotificationForm";
+import { formatWhen } from "@/components/support/MessageList";
+import { ThreadStatusBadge } from "@/components/support/ThreadStatus";
 
 export default async function AdminClientDetailPage({
   params,
@@ -34,6 +36,7 @@ export default async function AdminClientDetailPage({
         orderBy: { completedAt: "desc" },
         take: 1,
       },
+      supportThreads: { orderBy: { lastMessageAt: "desc" }, take: 5, include: { _count: { select: { messages: true } } } },
     },
   });
   if (!business) notFound();
@@ -109,6 +112,34 @@ export default async function AdminClientDetailPage({
             <p className="text-stone-500">No completed audit yet.</p>
           )}
         </div>
+      </Card>
+
+      <Card className="mt-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-stone-900">Support conversations</h2>
+          <Link href="/admin/support" className="text-sm font-medium text-accent hover:underline">
+            Inbox →
+          </Link>
+        </div>
+        {business.supportThreads.length === 0 ? (
+          <p className="mt-2 text-sm text-stone-500">This client has not messaged us yet.</p>
+        ) : (
+          <ul className="mt-2 divide-y divide-stone-200">
+            {business.supportThreads.map((t) => (
+              <li key={t.id}>
+                <Link href={`/admin/support/${t.id}`} className="flex items-center justify-between gap-4 py-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-stone-900">{t.subject}</p>
+                    <p className="text-xs text-stone-500">
+                      {t._count.messages} {t._count.messages === 1 ? "message" : "messages"} · {formatWhen(t.lastMessageAt)}
+                    </p>
+                  </div>
+                  <ThreadStatusBadge status={t.status} viewer="admin" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
 
       <div className="mt-8">

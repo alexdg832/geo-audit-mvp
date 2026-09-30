@@ -48,7 +48,11 @@ nothing is ever exposed with a `NEXT_PUBLIC_` prefix.
 - `OPENAI_API_KEY`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `PERPLEXITY_API_KEY` — AI engine keys. Each engine is enabled only when its key is present; missing engines are reported as "not configured" and the scan proceeds with the rest.
 - `OPENAI_MODEL`, `ANTHROPIC_MODEL`, `GEMINI_MODEL`, `PERPLEXITY_MODEL` (and `*_FAST_MODEL`) — optional model overrides.
 - `SCAN_PER_IP_HOURLY_LIMIT`, `SCAN_GLOBAL_HOURLY_LIMIT` — optional rate limits for anonymous scan starts (defaults 3 and 30).
-- `RESEND_API_KEY` — transactional email.
+- `RESEND_API_KEY` — transactional email (team alerts, welcome email, support thread copies). Without it every email is logged as "skipped".
+- `ADMIN_NOTIFY_EMAIL` — where team alerts go (new audit started, new lead, new support message).
+- `RESEND_FROM_EMAIL` — sender on outgoing email; set it only after verifying a domain in Resend. Unset uses Resend's sandbox sender, which only delivers to the Resend account owner.
+- `APP_URL` — public base URL for links inside emails (defaults to the Vercel production URL, then localhost).
+- `NEXT_PUBLIC_CALENDLY_URL` — the booking link shown to clients (public, so the prefix is fine). Unset shows a placeholder link and no inline embed.
 - `MOCK_MODE` — `"true"` runs the whole audit on labelled fixture data with no provider keys. Local development only.
 
 ## Walking through the app
@@ -57,8 +61,9 @@ nothing is ever exposed with a `NEXT_PUBLIC_` prefix.
 
 1. Land on the homepage and start an audit for your business.
 2. Watch the scan ask four AI engines the questions your customers ask, then read the report: score and grade, critical failures, six-pillar breakdown, every engine answer with its cited sources, competitors, source map, cost of inaction and a prioritised roadmap.
-3. Click "Fix this with us" to either book a call or skip straight to a client account.
+3. Click "Fix this with us" to either book a call or skip straight to a client account. Either way you get a welcome email and the team gets a "new lead" alert.
 4. Land on your client dashboard, where you can track your Truth Brief and content pushes over time.
+5. Open **Support** from the dashboard to message the team, book a call (Calendly), and see every conversation and reply in one place. Replies also arrive by email.
 
 **As an admin:**
 
@@ -66,6 +71,8 @@ nothing is ever exposed with a `NEXT_PUBLIC_` prefix.
 2. Open the seeded demo client (or any real client that signed up).
 3. Write a Truth Brief, create or update content pushes, and send a notification.
 4. Check the client dashboard — the notification shows up there as unread.
+5. Open **Support** in the admin nav: every client conversation, filterable by status. A reply from there lands in the client's dashboard, their notification bell and their inbox.
+6. **Provider status** shows engine health and, at the bottom, the email delivery log (every email attempted, with the reason when one was skipped or failed).
 
 ## Demo accounts
 
@@ -84,11 +91,14 @@ console — use those to log in as a client. The admin password is whatever
 
 Engines are enabled only when their key is present. With `MOCK_MODE=true` the whole flow runs on labelled fixtures (`src/lib/providers/mock.ts`); mock scans are flagged in the database and banner-labelled in the UI, and mock mode refuses to run on a deployed environment.
 
-Other things worth knowing:
+## Email and support pipeline
 
-- Real email sending is not wired yet (`RESEND_API_KEY` is reserved for it).
-- The Calendly URL in `config/site.ts` is a placeholder — swap it for a real scheduling link before launch.
-- Deploying the migrations to the existing production database needs a one-time baseline: `prisma migrate resolve --applied 20260929000000_init` (see `docs/UPGRADE_SUMMARY.md`).
+- `src/lib/email/` sends through the Resend REST API with plain `fetch`, logs every attempt to `EmailEvent`, and never throws. Emails go out with `after()` so a delivery problem never blocks a form.
+- Team alerts: audit started (the first form), new lead (the account form, with goals, score and a link to the client), new support message. Client emails: welcome, "we received your message", and a copy of every team reply.
+- Support threads live in `SupportThread` / `SupportMessage`; clients use `/dashboard/support`, the team uses `/admin/support`. Statuses: `open` (waiting on us), `answered`, `closed`.
+- The Calendly link comes from `NEXT_PUBLIC_CALENDLY_URL` (placeholder until set).
+
+Deploying: see [docs/DEPLOY.md](docs/DEPLOY.md). The existing production database needs a one-time baseline (`prisma migrate resolve --applied 20260929000000_init`) before the first deploy of this branch.
 
 ## Tech stack
 

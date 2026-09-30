@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { adminNewLeadEmail, adminSupportMessageEmail, clientWelcomeEmail, escapeHtml, textToHtml } from "./templates";
+import {
+  adminAuditStartedEmail,
+  adminNewLeadEmail,
+  adminSupportMessageEmail,
+  clientSupportReceiptEmail,
+  clientSupportReplyEmail,
+  clientWelcomeEmail,
+  escapeHtml,
+  safeSubject,
+  textToHtml,
+} from "./templates";
 
 const APP = "https://example.test";
 
@@ -10,6 +20,30 @@ describe("escapeHtml / textToHtml", () => {
 
   it("turns blank lines into paragraphs and single newlines into breaks", () => {
     expect(textToHtml("one\ntwo\n\nthree")).toBe('<p style="margin:0 0 12px">one<br>two</p><p style="margin:0 0 12px">three</p>');
+  });
+});
+
+describe("safeSubject", () => {
+  it("folds CR, LF, tabs and other control characters into single spaces", () => {
+    expect(safeSubject("Acme\r\nBcc: victim@example.com")).toBe("Acme Bcc: victim@example.com");
+    expect(safeSubject("  a\t\tb \u0000c  ")).toBe("a b c");
+  });
+
+  it("keeps a business name containing CRLF out of every subject header", () => {
+    const businessName = "Acme\r\nBcc: victim@example.com";
+    const subjects = [
+      adminAuditStartedEmail({ businessName, website: null, location: null, auditId: "a1", rerun: false, appUrl: APP }).subject,
+      adminNewLeadEmail({ businessName, businessId: "b1", email: "o@acme.test", name: null, goals: null, wantsCall: false, score: null, grade: null, auditId: "a1", appUrl: APP }).subject,
+      clientWelcomeEmail({ businessName, wantsCall: false, calendlyUrl: null, replyByEmail: true, score: null, grade: null, auditId: "a1", appUrl: APP }).subject,
+      adminSupportMessageEmail({ businessName, threadId: "t1", subject: "Hi\nthere", body: "x", fromEmail: "o@acme.test", isNewThread: true, appUrl: APP }).subject,
+      clientSupportReceiptEmail({ businessName, threadId: "t1", subject: "Hi\rthere", body: "x", appUrl: APP }).subject,
+      clientSupportReplyEmail({ businessName, threadId: "t1", subject: "Hi\r\nthere", body: "x", replyByEmail: true, appUrl: APP }).subject,
+    ];
+    for (const subject of subjects) {
+      expect(subject).not.toMatch(/[\r\n\t]/);
+      expect(subject.split("\n")).toHaveLength(1);
+    }
+    expect(subjects[0]).toBe("New audit started: Acme Bcc: victim@example.com");
   });
 });
 
@@ -37,10 +71,31 @@ describe("email templates", () => {
   });
 
   it("includes the booking link only when the client asked for a call", () => {
-    const base = { businessName: "Acme", calendlyUrl: "https://calendly.test/acme", score: null, grade: null, auditId: "a1", appUrl: APP };
+    const base = { businessName: "Acme", calendlyUrl: "https://calendly.test/acme", replyByEmail: true, score: null, grade: null, auditId: "a1", appUrl: APP };
     expect(clientWelcomeEmail({ ...base, wantsCall: true }).html).toContain("https://calendly.test/acme");
     expect(clientWelcomeEmail({ ...base, wantsCall: false }).html).not.toContain("calendly.test");
     expect(clientWelcomeEmail({ ...base, wantsCall: false }).text).toContain(`${APP}/dashboard/support`);
+  });
+
+  it("promises a follow-up email instead of a booking link when Calendly is not configured", () => {
+    const email = clientWelcomeEmail({ businessName: "Acme", wantsCall: true, calendlyUrl: null, replyByEmail: true, score: null, grade: null, auditId: "a1", appUrl: APP });
+    expect(email.html).not.toContain("calendly");
+    expect(email.html).not.toContain("Book a call");
+    expect(email.html).toContain("We will email you to pick a time");
+    expect(email.text).toContain("We will email you to pick a time");
+    expect(email.text).not.toContain("Book a call");
+  });
+
+  it("only tells the client to reply by email when a reply-to inbox exists", () => {
+    const base = { businessName: "Acme", wantsCall: false, calendlyUrl: null, score: null, grade: null, auditId: "a1", appUrl: APP };
+    expect(clientWelcomeEmail({ ...base, replyByEmail: true }).html).toContain("Reply to this email");
+    expect(clientWelcomeEmail({ ...base, replyByEmail: false }).html).not.toContain("Reply to this email");
+    expect(clientWelcomeEmail({ ...base, replyByEmail: false }).html).toContain(`${APP}/dashboard/support`);
+
+    const reply = { businessName: "Acme", threadId: "t1", subject: "Hours", body: "Fixed.", appUrl: APP };
+    expect(clientSupportReplyEmail({ ...reply, replyByEmail: true }).html).toContain("replying to this email");
+    expect(clientSupportReplyEmail({ ...reply, replyByEmail: false }).html).not.toContain("replying to this email");
+    expect(clientSupportReplyEmail({ ...reply, replyByEmail: false }).html).toContain("You can answer from your dashboard.");
   });
 
   it("links the team to the admin thread and quotes the client's message", () => {

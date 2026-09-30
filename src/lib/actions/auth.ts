@@ -6,6 +6,15 @@ import { verifyPassword } from "@/lib/auth/password";
 import { createUserSession, destroyUserSession } from "@/lib/auth/session";
 import { ActionState } from "./types";
 
+// Only a same-origin path under /dashboard may follow a login: no scheme, no "//" host, no backslash or control characters.
+// (Kept local because a "use server" file may only export async functions.)
+const NEXT_PATH = /^\/dashboard(?:[/?#][^\s\\]*)?$/;
+
+function nextPath(raw: FormDataEntryValue | null): string {
+  const value = typeof raw === "string" ? raw : "";
+  return NEXT_PATH.test(value) ? value : "/dashboard";
+}
+
 export async function loginAction(
   _prevState: ActionState,
   formData: FormData
@@ -21,7 +30,7 @@ export async function loginAction(
   }
 
   await createUserSession(user.id);
-  redirect("/dashboard");
+  redirect(nextPath(formData.get("next")));
 }
 
 export async function logoutAction() {

@@ -19,10 +19,10 @@ is redeployed.
 | `GEMINI_API_KEY` | Gemini engine | key is valid; the Google project needs billing/quota |
 | `PERPLEXITY_API_KEY` | Perplexity engine | key is valid; the account needs credits |
 | `RESEND_API_KEY` | all email | key is valid today |
-| `ADMIN_NOTIFY_EMAIL` | where lead/support alerts go | until a domain is verified in Resend this must be the address that owns the Resend account |
-| `RESEND_FROM_EMAIL` | sender on outgoing email | only after you verify a domain at resend.com/domains, e.g. `TrueSource <hello@yourdomain.com>` |
-| `APP_URL` | links inside emails | optional; defaults to the Vercel production URL |
-| `NEXT_PUBLIC_CALENDLY_URL` | booking button + inline embed | your real Calendly event link |
+| `ADMIN_NOTIFY_EMAIL` | where lead/support alerts go, and the reply-to on client emails | until a domain is verified in Resend this must be the address that owns the Resend account |
+| `RESEND_FROM_EMAIL` | sender on outgoing email | only after you verify a domain at resend.com/domains, e.g. `TrueSource <hello@yourdomain.com>`; any `@resend.dev` sender is sandbox-only |
+| `APP_URL` | links inside emails | optional; Production defaults to the Vercel production URL, Preview to the deployment's own URL (behind deployment protection) |
+| `NEXT_PUBLIC_CALENDLY_URL` | booking button + inline embed + welcome email | your real Calendly event link. **Must be set before the build**: it is inlined into the browser bundle, so changing it later needs a redeploy. Until it is set there is no booking link anywhere and clients who ask for a call are told we will email them |
 | `DATABASE_URL`, `DATABASE_URL_UNPOOLED` | Postgres | already set by the Neon integration; leave them |
 
 Do **not** set `MOCK_MODE` on Vercel (the app refuses to run mock mode on a deployed
@@ -81,6 +81,8 @@ migrations, then `next build` finish. Open the preview URL and check:
   engine still showing an error tells you exactly which key or billing issue remains.
 - Start an audit from the homepage. It should complete with whichever engines are live.
 - **Admin → Support** and the **Email delivery** card on Provider status show what was sent.
+  Links inside emails sent from a Preview point at that Preview's own URL, which sits behind
+  Vercel's deployment protection, so opening them asks for a Vercel login first.
 
 ## 5. Promote to production
 
@@ -105,7 +107,6 @@ The push to `main` triggers the Production deployment at `https://geo-audit-mvp.
    *failed* in the Email delivery log with a 403, verify a domain in Resend and set
    `RESEND_FROM_EMAIL`.
 4. Send a support message from the client dashboard and answer it from **Admin → Support**.
-5. Replace the placeholder booking link by setting `NEXT_PUBLIC_CALENDLY_URL` and redeploying.
 
 ## Project settings worth checking once
 

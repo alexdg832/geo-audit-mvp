@@ -22,7 +22,10 @@ beforeEach(() => {
   delete process.env.RESEND_FROM_EMAIL;
   delete process.env.ADMIN_NOTIFY_EMAIL;
   delete process.env.APP_URL;
+  delete process.env.VERCEL_ENV;
   delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  delete process.env.VERCEL_BRANCH_URL;
+  delete process.env.VERCEL_URL;
 });
 
 afterEach(() => {
@@ -86,11 +89,39 @@ describe("emailConfig / appUrl", () => {
     expect(emailConfig()).toMatchObject({ from: "Acme <hi@acme.test>", sandboxSender: false, adminInbox: "team@acme.test" });
   });
 
-  it("prefers APP_URL, then the Vercel production host, then localhost", () => {
+  it("flags an explicitly configured @resend.dev sender as sandbox too", () => {
+    process.env.RESEND_FROM_EMAIL = "onboarding@resend.dev";
+    expect(emailConfig().sandboxSender).toBe(true);
+    process.env.RESEND_FROM_EMAIL = "TrueSource <Onboarding@Resend.dev>";
+    expect(emailConfig().sandboxSender).toBe(true);
+    process.env.RESEND_FROM_EMAIL = "TrueSource <hello@resend.dev.example>";
+    expect(emailConfig().sandboxSender).toBe(false);
+  });
+
+  it("prefers APP_URL, then the Vercel production host on Production, then localhost", () => {
     expect(appUrl()).toBe("http://localhost:3000");
+    process.env.VERCEL_ENV = "production";
     process.env.VERCEL_PROJECT_PRODUCTION_URL = "geo.example.test";
+    process.env.VERCEL_URL = "geo-abc123.vercel.test";
     expect(appUrl()).toBe("https://geo.example.test");
     process.env.APP_URL = "https://truesource.example/";
     expect(appUrl()).toBe("https://truesource.example");
+  });
+
+  it("never links a Preview deployment to the production host", () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = "geo.example.test";
+    process.env.VERCEL_URL = "geo-abc123.vercel.test";
+    expect(appUrl()).toBe("https://geo-abc123.vercel.test");
+    process.env.VERCEL_BRANCH_URL = "geo-git-feature.vercel.test";
+    expect(appUrl()).toBe("https://geo-git-feature.vercel.test");
+  });
+
+  it("ignores Vercel hosts outside a Vercel production or preview build", () => {
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = "geo.example.test";
+    process.env.VERCEL_URL = "localhost:3000";
+    expect(appUrl()).toBe("http://localhost:3000");
+    process.env.VERCEL_ENV = "development";
+    expect(appUrl()).toBe("http://localhost:3000");
   });
 });

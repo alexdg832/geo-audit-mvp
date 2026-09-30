@@ -39,10 +39,20 @@ export default async function SupportPage() {
       <div className="grid gap-6 sm:grid-cols-2">
         <Card>
           <h2 className="text-lg font-semibold text-stone-900">Book a call</h2>
-          <p className="mt-1 text-sm text-stone-600">Pick a time that suits you and we&apos;ll walk through your report and the fixes together.</p>
-          <LinkButton href={siteConfig.calendlyUrl} target="_blank" rel="noopener noreferrer" className="mt-4 w-full">
-            Book a call
-          </LinkButton>
+          {siteConfig.calendlyUrl ? (
+            <>
+              <p className="mt-1 text-sm text-stone-600">Pick a time that suits you and we&apos;ll walk through your report and the fixes together.</p>
+              <LinkButton href={siteConfig.calendlyUrl} target="_blank" rel="noopener noreferrer" className="mt-4 w-full">
+                Book a call
+              </LinkButton>
+            </>
+          ) : (
+            <p className="mt-1 text-sm text-stone-600">
+              {contact?.wantsCall
+                ? "You asked for a call. We'll email you to pick a time."
+                : "Want to walk through your report together? Send us a message below and we'll email you to pick a time."}
+            </p>
+          )}
         </Card>
         <Card>
           <h2 className="text-lg font-semibold text-stone-900">Your account</h2>
@@ -71,9 +81,9 @@ export default async function SupportPage() {
         </Card>
       </div>
 
-      {siteConfig.calendlyConfigured && (
+      {siteConfig.calendlyEmbedUrl && (
         <Card className="mt-6 p-2">
-          <iframe src={`${siteConfig.calendlyUrl}?hide_gdpr_banner=1`} title="Book a call" loading="lazy" className="h-[660px] w-full rounded-xl border-0" />
+          <iframe src={siteConfig.calendlyEmbedUrl} title="Book a call" loading="lazy" className="h-[660px] w-full rounded-xl border-0" />
         </Card>
       )}
 

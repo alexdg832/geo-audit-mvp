@@ -33,12 +33,16 @@ const SANDBOX_FROM = "TrueSource <onboarding@resend.dev>";
 const TIMEOUT_MS = 10_000;
 
 export function emailConfig() {
-  const from = process.env.RESEND_FROM_EMAIL?.trim() || "";
+  const from = process.env.RESEND_FROM_EMAIL?.trim() || SANDBOX_FROM;
   return {
     configured: Boolean(process.env.RESEND_API_KEY),
-    from: from || SANDBOX_FROM,
-    /** Resend's sandbox sender only delivers to the address that owns the Resend account. */
-    sandboxSender: !from,
+    from,
+    /**
+     * Resend's sandbox sender (any @resend.dev address, including the quickstart's onboarding@resend.dev when it is set
+     * explicitly) only delivers to the address that owns the Resend account: client emails fail, and team alerts only
+     * arrive when ADMIN_NOTIFY_EMAIL is that same address.
+     */
+    sandboxSender: /@resend\.dev>?$/i.test(from),
     adminInbox: process.env.ADMIN_NOTIFY_EMAIL?.trim() || null,
   };
 }
@@ -47,8 +51,18 @@ export function emailConfig() {
 export function appUrl(): string {
   const explicit = process.env.APP_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
-  const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
-  if (vercel) return `https://${vercel}`;
+  // Vercel sets VERCEL_PROJECT_PRODUCTION_URL on Preview deployments too; only Production may link there, otherwise a
+  // Preview would email links to threads that do not exist on the production host. Preview links stay behind Vercel's
+  // deployment protection, which is expected while testing.
+  const env = process.env.VERCEL_ENV;
+  const host =
+    env === "production"
+      ? process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL
+      : env === "preview"
+        ? process.env.VERCEL_BRANCH_URL || process.env.VERCEL_URL
+        : undefined;
+  const trimmed = host?.trim();
+  if (trimmed) return `https://${trimmed}`;
   return "http://localhost:3000";
 }
 

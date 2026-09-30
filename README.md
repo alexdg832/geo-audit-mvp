@@ -49,10 +49,10 @@ nothing is ever exposed with a `NEXT_PUBLIC_` prefix.
 - `OPENAI_MODEL`, `ANTHROPIC_MODEL`, `GEMINI_MODEL`, `PERPLEXITY_MODEL` (and `*_FAST_MODEL`) — optional model overrides.
 - `SCAN_PER_IP_HOURLY_LIMIT`, `SCAN_GLOBAL_HOURLY_LIMIT` — optional rate limits for anonymous scan starts (defaults 3 and 30).
 - `RESEND_API_KEY` — transactional email (team alerts, welcome email, support thread copies). Without it every email is logged as "skipped".
-- `ADMIN_NOTIFY_EMAIL` — where team alerts go (new audit started, new lead, new support message).
-- `RESEND_FROM_EMAIL` — sender on outgoing email; set it only after verifying a domain in Resend. Unset uses Resend's sandbox sender, which only delivers to the Resend account owner.
-- `APP_URL` — public base URL for links inside emails (defaults to the Vercel production URL, then localhost).
-- `NEXT_PUBLIC_CALENDLY_URL` — the booking link shown to clients (public, so the prefix is fine). Unset shows a placeholder link and no inline embed.
+- `ADMIN_NOTIFY_EMAIL` — where team alerts go (new audit started, new lead, new support message) and the reply-to on client emails. Until a domain is verified in Resend it must be the Resend account's own address.
+- `RESEND_FROM_EMAIL` — sender on outgoing email; set it only after verifying a domain in Resend. Unset (or any `@resend.dev` address) uses Resend's sandbox sender, which only delivers to the Resend account owner.
+- `APP_URL` — public base URL for links inside emails (a Vercel Production build defaults to the production URL, a Preview build to its own URL, anything else to localhost).
+- `NEXT_PUBLIC_CALENDLY_URL` — the booking link shown to clients (public, so the prefix is fine). Inlined at build time, so redeploy after changing it. Unset means no booking link anywhere; clients who ask for a call are told we will email them.
 - `MOCK_MODE` — `"true"` runs the whole audit on labelled fixture data with no provider keys. Local development only.
 
 ## Walking through the app
@@ -63,7 +63,7 @@ nothing is ever exposed with a `NEXT_PUBLIC_` prefix.
 2. Watch the scan ask four AI engines the questions your customers ask, then read the report: score and grade, critical failures, six-pillar breakdown, every engine answer with its cited sources, competitors, source map, cost of inaction and a prioritised roadmap.
 3. Click "Fix this with us" to either book a call or skip straight to a client account. Either way you get a welcome email and the team gets a "new lead" alert.
 4. Land on your client dashboard, where you can track your Truth Brief and content pushes over time.
-5. Open **Support** from the dashboard to message the team, book a call (Calendly), and see every conversation and reply in one place. Replies also arrive by email.
+5. Open **Support** from the dashboard to message the team, book a call (once `NEXT_PUBLIC_CALENDLY_URL` is set), and see every conversation and reply in one place. Replies also arrive by email.
 
 **As an admin:**
 
@@ -96,7 +96,7 @@ Engines are enabled only when their key is present. With `MOCK_MODE=true` the wh
 - `src/lib/email/` sends through the Resend REST API with plain `fetch`, logs every attempt to `EmailEvent`, and never throws. Emails go out with `after()` so a delivery problem never blocks a form.
 - Team alerts: audit started (the first form), new lead (the account form, with goals, score and a link to the client), new support message. Client emails: welcome, "we received your message", and a copy of every team reply.
 - Support threads live in `SupportThread` / `SupportMessage`; clients use `/dashboard/support`, the team uses `/admin/support`. Statuses: `open` (waiting on us), `answered`, `closed`.
-- The Calendly link comes from `NEXT_PUBLIC_CALENDLY_URL` (placeholder until set).
+- The Calendly link comes from `NEXT_PUBLIC_CALENDLY_URL`. There is no placeholder: until it is set, every booking surface (account form, dashboard, support page, welcome email) is replaced by "we will email you to pick a time", while the call request is still recorded for the team.
 
 Deploying: see [docs/DEPLOY.md](docs/DEPLOY.md). The build runs `scripts/migrate-deploy.mjs`, which baselines a database that predates migrations once and then applies the pending migrations.
 

@@ -8,6 +8,17 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ESCAPES[c]);
 }
 
+/**
+ * A subject is a single-line mail header. Business names and other free text reach it, so CR/LF and every other control
+ * character are folded to a space here, at the one place all subjects are built, instead of at each caller.
+ */
+export function safeSubject(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** User-written text to escaped HTML: blank lines separate paragraphs, single newlines become line breaks. */
 export function textToHtml(value: string): string {
   return value
@@ -73,7 +84,7 @@ export function adminAuditStartedEmail(p: {
   rerun: boolean;
   appUrl: string;
 }): EmailContent {
-  const subject = `${p.rerun ? "Audit re-run" : "New audit started"}: ${p.businessName}`;
+  const subject = safeSubject(`${p.rerun ? "Audit re-run" : "New audit started"}: ${p.businessName}`);
   const adminLink = `${p.appUrl}/admin/scans`;
   const reportLink = `${p.appUrl}/audit/${p.auditId}/results`;
   const items: Row[] = [
@@ -103,7 +114,7 @@ export function adminNewLeadEmail(p: {
   auditId: string;
   appUrl: string;
 }): EmailContent {
-  const subject = `${p.wantsCall ? "New lead wants a call" : "New client account"}: ${p.businessName}`;
+  const subject = safeSubject(`${p.wantsCall ? "New lead wants a call" : "New client account"}: ${p.businessName}`);
   const clientLink = `${p.appUrl}/admin/clients/${p.businessId}`;
   const reportLink = `${p.appUrl}/audit/${p.auditId}/results`;
   const items: Row[] = [
@@ -122,26 +133,33 @@ export function adminNewLeadEmail(p: {
   return { subject, html, text };
 }
 
+const WILL_EMAIL_FOR_CALL = "You asked for a call. We will email you to pick a time.";
+
 export function clientWelcomeEmail(p: {
   businessName: string;
   wantsCall: boolean;
-  calendlyUrl: string;
+  /** null until NEXT_PUBLIC_CALENDLY_URL is configured: the email then promises a follow-up instead of a dead link. */
+  calendlyUrl: string | null;
+  /** false when no reply-to inbox is configured, so the client is not told to answer by email. */
+  replyByEmail: boolean;
   score: number | null;
   grade: string | null;
   auditId: string;
   appUrl: string;
 }): EmailContent {
-  const subject = `Welcome to ${siteConfig.name} — your GEO audit for ${p.businessName}`;
+  const subject = safeSubject(`Welcome to ${siteConfig.name} — your GEO audit for ${p.businessName}`);
   const dashboardLink = `${p.appUrl}/dashboard`;
   const reportLink = `${p.appUrl}/audit/${p.auditId}/results`;
   const supportLink = `${p.appUrl}/dashboard/support`;
   const score = scoreLine(p.score, p.grade);
+  const callHtml = !p.wantsCall ? "" : p.calendlyUrl ? para("You asked for a call. Pick a time that suits you:") + button(p.calendlyUrl, "Book a call") : para(WILL_EMAIL_FOR_CALL);
+  const questions = p.replyByEmail ? "Questions? Reply to this email or use Support in your dashboard" : "Questions? Use Support in your dashboard";
   const parts = [
     para(`Your account for ${p.businessName} is ready. Your full report, roadmap and every fix we make for you live in your dashboard.`),
     score ? para(`Current score: ${score}.`) : "",
-    p.wantsCall ? para("You asked for a call. Pick a time that suits you:") + button(p.calendlyUrl, "Book a call") : "",
+    callHtml,
     button(dashboardLink, "Open your dashboard"),
-    `<p style="font-size:13px;color:#57534e;margin:0">Report: ${link(reportLink)}<br>Questions? Reply to this email or use Support in your dashboard: ${link(supportLink)}</p>`,
+    `<p style="font-size:13px;color:#57534e;margin:0">Report: ${link(reportLink)}<br>${questions}: ${link(supportLink)}</p>`,
   ];
   const html = layout(`Welcome, ${p.businessName}`, parts.join(""));
   const text = [
@@ -149,7 +167,7 @@ export function clientWelcomeEmail(p: {
     "",
     `Your account for ${p.businessName} is ready.`,
     score ? `Current score: ${score}.` : "",
-    p.wantsCall ? `Book a call: ${p.calendlyUrl}` : "",
+    !p.wantsCall ? "" : p.calendlyUrl ? `Book a call: ${p.calendlyUrl}` : WILL_EMAIL_FOR_CALL,
     `Dashboard: ${dashboardLink}`,
     `Report: ${reportLink}`,
     `Support: ${supportLink}`,
@@ -168,7 +186,7 @@ export function adminSupportMessageEmail(p: {
   isNewThread: boolean;
   appUrl: string;
 }): EmailContent {
-  const subject = `${p.isNewThread ? "New support message" : "Support reply"} from ${p.businessName}: ${p.subject}`;
+  const subject = safeSubject(`${p.isNewThread ? "New support message" : "Support reply"} from ${p.businessName}: ${p.subject}`);
   const threadLink = `${p.appUrl}/admin/support/${p.threadId}`;
   const items: Row[] = [
     ["Client", p.businessName],
@@ -180,7 +198,7 @@ export function adminSupportMessageEmail(p: {
 }
 
 export function clientSupportReceiptEmail(p: { businessName: string; threadId: string; subject: string; body: string; appUrl: string }): EmailContent {
-  const subject = `We received your message: ${p.subject}`;
+  const subject = safeSubject(`We received your message: ${p.subject}`);
   const threadLink = `${p.appUrl}/dashboard/support/${p.threadId}`;
   const html = layout(
     "Thanks, we got your message",
@@ -190,10 +208,19 @@ export function clientSupportReceiptEmail(p: { businessName: string; threadId: s
   return { subject, html, text };
 }
 
-export function clientSupportReplyEmail(p: { businessName: string; threadId: string; subject: string; body: string; appUrl: string }): EmailContent {
-  const subject = `Re: ${p.subject}`;
+export function clientSupportReplyEmail(p: {
+  businessName: string;
+  threadId: string;
+  subject: string;
+  body: string;
+  /** false when no reply-to inbox is configured, so the client is not told to answer by email. */
+  replyByEmail: boolean;
+  appUrl: string;
+}): EmailContent {
+  const subject = safeSubject(`Re: ${p.subject}`);
   const threadLink = `${p.appUrl}/dashboard/support/${p.threadId}`;
-  const html = layout(`Reply from ${siteConfig.name}`, quote(p.body) + button(threadLink, "View conversation") + para("You can answer by replying to this email or from your dashboard."));
+  const answerHint = p.replyByEmail ? "You can answer by replying to this email or from your dashboard." : "You can answer from your dashboard.";
+  const html = layout(`Reply from ${siteConfig.name}`, quote(p.body) + button(threadLink, "View conversation") + para(answerHint));
   const text = `${subject}\n\n${p.body}\n\nConversation: ${threadLink}`;
   return { subject, html, text };
 }

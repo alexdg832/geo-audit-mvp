@@ -12,6 +12,7 @@ import { ContentPushTimeline } from "@/components/ContentPushTimeline";
 import { NotificationBell } from "@/components/NotificationBell";
 import { Card } from "@/components/ui/Card";
 import { Button, LinkButton } from "@/components/ui/Button";
+import { siteConfig } from "@config/site";
 
 // rerunAuditAction kicks the first scan tick with after(); it runs up to this limit.
 export const maxDuration = 120;
@@ -40,12 +41,14 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
     prisma.supportThread.count({ where: { businessId: user.businessId, status: "answered" } }),
   ]);
 
+  // "Book a call" is only promised once a real Calendly link is configured.
+  const contactVerb = siteConfig.calendlyConfigured ? "Message us or book a call" : "Message us";
   const supportSummary =
     repliesWaiting > 0
       ? `${repliesWaiting} ${repliesWaiting === 1 ? "reply is" : "replies are"} waiting for you.`
       : threadCount > 0
-        ? `${threadCount} ${threadCount === 1 ? "conversation" : "conversations"} so far. Message us or book a call any time.`
-        : "Questions about your report or the fixes? Message us or book a call.";
+        ? `${threadCount} ${threadCount === 1 ? "conversation" : "conversations"} so far. ${contactVerb} any time.`
+        : `Questions about your report or the fixes? ${contactVerb}.`;
 
   const pillars = (latestAudit?.report?.pillars as { key: string; label: string; weight: number; score: number }[] | undefined) ?? null;
 
@@ -66,11 +69,17 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
       {booked === "1" && (
         <p className="mb-6 rounded-xl border border-green-200 bg-green-50 p-3 text-sm text-green-900">
-          Thanks! Our scheduler opened in a new tab. If it did not, you can book from the{" "}
-          <Link href="/dashboard/support" className="font-medium underline underline-offset-2">
-            support page
-          </Link>
-          . We have your goals and will be in touch by email.
+          {siteConfig.calendlyConfigured ? (
+            <>
+              Thanks! Our scheduler opened in a new tab. If it did not, you can book from the{" "}
+              <Link href="/dashboard/support" className="font-medium underline underline-offset-2">
+                support page
+              </Link>
+              . We have your goals and will be in touch by email.
+            </>
+          ) : (
+            <>Thanks! We have your goals and will email you to pick a time for your call.</>
+          )}
         </p>
       )}
 

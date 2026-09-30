@@ -8,6 +8,17 @@ import { Button } from "./ui/Button";
 const inputClass =
   "mt-1 w-full rounded-lg border border-stone-300 px-4 py-2.5 text-stone-900 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
 
+// Mirrors validateCredentials in src/lib/actions/contact.ts, so the scheduler is not opened for a form the server will reject.
+const EMAIL_REGEX = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
+
+function credentialsError(email: string, password: string): string | null {
+  if (!email || !password) return "Email and password are required.";
+  if (!EMAIL_REGEX.test(email) || email.length > 254) return "Please enter a valid email address.";
+  if (password.length < 8) return "Password must be at least 8 characters.";
+  if (password.length > 128) return "Password must be at most 128 characters.";
+  return null;
+}
+
 export function ContactOrSkipForm({ auditId }: { auditId: string }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,7 +26,9 @@ export function ContactOrSkipForm({ auditId }: { auditId: string }) {
   const [goals, setGoals] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"call" | "skip" | null>(null);
+  const [schedulerOpened, setSchedulerOpened] = useState(false);
   const [pending, startTransition] = useTransition();
+  const canBook = siteConfig.calendlyUrl !== null;
 
   function buildFormData() {
     const fd = new FormData();
@@ -27,12 +40,18 @@ export function ContactOrSkipForm({ auditId }: { auditId: string }) {
   }
 
   function handleBookCall() {
-    if (!email || !password) {
-      setError("Email and password are required.");
+    const validationError = credentialsError(email.trim(), password);
+    if (validationError) {
+      setError(validationError);
       return;
     }
-    // Open synchronously on click so browsers don't block the popup.
-    window.open(siteConfig.calendlyUrl, "_blank", "noopener,noreferrer");
+    // Open synchronously on click so browsers don't block the popup, and only once: a retry after a server-side error
+    // must not open a second tab. Without a real link there is nothing to open; the call is still recorded (wantsCall)
+    // and the team emails the client to pick a time.
+    if (siteConfig.calendlyUrl && !schedulerOpened) {
+      window.open(siteConfig.calendlyUrl, "_blank", "noopener,noreferrer");
+      setSchedulerOpened(true);
+    }
     setError(null);
     setMode("call");
     startTransition(async () => {
@@ -87,9 +106,11 @@ export function ContactOrSkipForm({ auditId }: { auditId: string }) {
       </div>
 
       <div className="rounded-xl border border-stone-200 p-4">
-        <h3 className="font-semibold text-stone-900">Book a call</h3>
+        <h3 className="font-semibold text-stone-900">{canBook ? "Book a call" : "Request a call"}</h3>
         <p className="mt-1 text-sm text-stone-600">
-          Tell us a bit about your goals and we&apos;ll open our scheduler.
+          {canBook
+            ? "Tell us a bit about your goals and we'll open our scheduler."
+            : "Tell us a bit about your goals and we will email you to pick a time."}
         </p>
         <div className="mt-3 space-y-3">
           <input
@@ -106,7 +127,7 @@ export function ContactOrSkipForm({ auditId }: { auditId: string }) {
             rows={3}
           />
           <Button onClick={handleBookCall} disabled={pending} className="w-full">
-            {pending && mode === "call" ? "Booking…" : "Book a call"}
+            {pending && mode === "call" ? (canBook ? "Booking…" : "Sending…") : canBook ? "Book a call" : "Request a call"}
           </Button>
         </div>
       </div>

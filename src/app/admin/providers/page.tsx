@@ -101,7 +101,7 @@ export default async function AdminProvidersPage() {
         </dl>
         {email.sandboxSender && (
           <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-            Sandbox sender in use. Resend only delivers from <span className="font-mono">onboarding@resend.dev</span> to the address that owns the Resend account, so client emails will fail until you verify a domain at resend.com/domains and set <span className="font-mono">RESEND_FROM_EMAIL</span>.
+            Sandbox sender in use. Resend only delivers from an <span className="font-mono">@resend.dev</span> address to the address that owns the Resend account: client emails will fail, and team alerts only arrive if <span className="font-mono">ADMIN_NOTIFY_EMAIL</span> is that same address. Verify a domain at resend.com/domains and set <span className="font-mono">RESEND_FROM_EMAIL</span> to lift both limits.
           </p>
         )}
         <h3 className="mt-5 text-sm font-semibold text-stone-900">Last {emailEvents.length} emails</h3>

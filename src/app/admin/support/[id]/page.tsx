@@ -12,9 +12,10 @@ import { Card } from "@/components/ui/Card";
 const statusButtonClass = "rounded-md border border-stone-300 px-2 py-1 text-xs font-medium text-stone-700 hover:bg-stone-50";
 
 export default async function AdminSupportThreadPage({ params }: { params: Promise<{ id: string }> }) {
-  if (!(await isAdmin())) redirect("/admin/login");
-
   const { id } = await params;
+  // "Reply in admin" email links land here without a session; return to this thread after the admin logs in.
+  if (!(await isAdmin())) redirect(`/admin/login?next=${encodeURIComponent(`/admin/support/${id}`)}`);
+
   const thread = await prisma.supportThread.findUnique({
     where: { id },
     include: {

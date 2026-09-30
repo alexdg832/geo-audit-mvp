@@ -59,6 +59,8 @@ export async function notifyNewLead(userId: string, auditId: string, wantsCall: 
     businessName: user.business.name,
     wantsCall,
     calendlyUrl: siteConfig.calendlyUrl,
+    // Replies only reach a person when the team inbox is the reply-to address.
+    replyByEmail: Boolean(adminInbox),
     score,
     grade,
     auditId,
@@ -75,13 +77,15 @@ export async function notifyNewLead(userId: string, auditId: string, wantsCall: 
 export async function notifySupportMessageFromClient(messageId: string, isNewThread: boolean): Promise<void> {
   const message = await prisma.supportMessage.findUnique({
     where: { id: messageId },
-    include: { thread: { include: { business: { include: { users: { select: { email: true } } } } } } },
+    include: { thread: { include: { business: { include: { users: { select: { email: true }, orderBy: { createdAt: "asc" }, take: 1 } } } } } },
   });
   if (!message) return;
   const { thread } = message;
   const base = appUrl();
   const { adminInbox } = emailConfig();
-  const clientEmail = thread.business.users[0]?.email ?? "";
+  // The author's login email is stored on the message; the business's first user is only a fallback for older rows.
+  const authorEmail = message.author === "client" ? message.authorName : null;
+  const clientEmail = authorEmail || thread.business.users[0]?.email || "";
 
   const admin = await sendAdminEmail({
     kind: "admin_support_message",
@@ -130,7 +134,14 @@ export async function notifySupportReplyFromAdmin(messageId: string): Promise<vo
       sendEmail({
         kind: "client_support_reply",
         to: u.email,
-        ...clientSupportReplyEmail({ businessName: thread.business.name, threadId: thread.id, subject: thread.subject, body: message.body, appUrl: base }),
+        ...clientSupportReplyEmail({
+          businessName: thread.business.name,
+          threadId: thread.id,
+          subject: thread.subject,
+          body: message.body,
+          replyByEmail: Boolean(adminInbox),
+          appUrl: base,
+        }),
         replyTo: adminInbox ?? undefined,
         idempotencyKey: `support-${messageId}-${u.id}`,
         businessId: thread.businessId,

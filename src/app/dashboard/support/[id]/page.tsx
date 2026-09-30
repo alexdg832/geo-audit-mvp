@@ -9,10 +9,11 @@ import { ThreadStatusBadge } from "@/components/support/ThreadStatus";
 import { Card } from "@/components/ui/Card";
 
 export default async function SupportThreadPage({ params }: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
-  if (!user) redirect("/login");
-
   const { id } = await params;
+  const user = await getCurrentUser();
+  // Email deep links land here on a fresh device; send the visitor back to this thread after they log in.
+  if (!user) redirect(`/login?next=${encodeURIComponent(`/dashboard/support/${id}`)}`);
+
   const thread = await prisma.supportThread.findFirst({
     where: { id, businessId: user.businessId },
     include: { messages: { orderBy: { createdAt: "asc" } } },

@@ -1,5 +1,6 @@
 "use server";
 
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { getCurrentUser, isAdmin } from "@/lib/auth/session";
@@ -13,6 +14,7 @@ const BODY_MAX = 5000;
 const CLIENT_MESSAGES_PER_HOUR = 20;
 const THREAD_STATUSES = new Set(["open", "answered", "closed"]);
 const NOT_LOGGED_IN: ActionState = { error: "Please log in to send a message." };
+const NOT_FOUND: ActionState = { error: "Conversation not found." };
 const TOO_MANY: ActionState = { error: "You have sent a lot of messages in the last hour. Please wait a little before sending more." };
 
 function cleanSubject(raw: FormDataEntryValue | null): string {
@@ -44,6 +46,32 @@ function queueEmail(task: () => Promise<void>, label: string): void {
   });
 }
 
+/**
+ * Inserts a message and moves the thread's status/lastMessageAt in ONE write, so the two can never disagree (a message
+ * without its status change would hide the thread from the "Needs reply" inbox and the client's "reply waiting" banner).
+ * `where` may carry businessId next to id, which keeps a client's write scoped to their own business.
+ * Returns the new message id, or null when the thread does not exist for that `where`.
+ */
+async function appendMessage(
+  where: Prisma.SupportThreadWhereUniqueInput,
+  message: { author: "client" | "admin"; authorName: string; body: string },
+  status: "open" | "answered"
+): Promise<string | null> {
+  const now = new Date();
+  try {
+    const thread = await prisma.supportThread.update({
+      where,
+      data: { status, lastMessageAt: now, messages: { create: { ...message, createdAt: now } } },
+      // createdAt is written and read back at millisecond precision, so this picks out the message just created.
+      select: { messages: { where: { createdAt: now }, take: 1, select: { id: true } } },
+    });
+    return thread.messages[0]?.id ?? null;
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") return null;
+    throw err;
+  }
+}
+
 export async function createSupportThreadAction(_prevState: ActionState, formData: FormData): Promise<ActionState> {
   const user = await getCurrentUser();
   if (!user) return NOT_LOGGED_IN;
@@ -68,15 +96,13 @@ export async function createSupportThreadAction(_prevState: ActionState, formDat
 export async function replyToSupportThreadAction(threadId: string, _prevState: ActionState, formData: FormData): Promise<ActionState> {
   const user = await getCurrentUser();
   if (!user) return NOT_LOGGED_IN;
-  const thread = await prisma.supportThread.findFirst({ where: { id: threadId, businessId: user.businessId }, select: { id: true } });
-  if (!thread) return { error: "Conversation not found." };
   const body = cleanBody(formData.get("message"));
   if (!body) return { error: "Please write a message." };
   if (await clientOverCap(user.businessId)) return TOO_MANY;
 
-  const message = await prisma.supportMessage.create({ data: { threadId, author: "client", authorName: user.email, body } });
-  await prisma.supportThread.update({ where: { id: threadId }, data: { status: "open", lastMessageAt: message.createdAt } });
-  queueEmail(() => notifySupportMessageFromClient(message.id, false), "Support reply");
+  const messageId = await appendMessage({ id: threadId, businessId: user.businessId }, { author: "client", authorName: user.email, body }, "open");
+  if (!messageId) return NOT_FOUND;
+  queueEmail(() => notifySupportMessageFromClient(messageId, false), "Support reply");
 
   revalidatePath(`/dashboard/support/${threadId}`);
   revalidatePath("/dashboard/support");
@@ -86,14 +112,14 @@ export async function replyToSupportThreadAction(threadId: string, _prevState: A
 export async function adminReplyToThreadAction(threadId: string, _prevState: ActionState, formData: FormData): Promise<ActionState> {
   if (!(await isAdmin())) return { error: "Admin session required." };
   const thread = await prisma.supportThread.findUnique({ where: { id: threadId }, select: { id: true, businessId: true, subject: true } });
-  if (!thread) return { error: "Conversation not found." };
+  if (!thread) return NOT_FOUND;
   const body = cleanBody(formData.get("message"));
   if (!body) return { error: "Please write a reply." };
 
-  const message = await prisma.supportMessage.create({ data: { threadId, author: "admin", authorName: "TrueSource", body } });
-  await prisma.supportThread.update({ where: { id: threadId }, data: { status: "answered", lastMessageAt: message.createdAt } });
+  const messageId = await appendMessage({ id: threadId }, { author: "admin", authorName: "TrueSource", body }, "answered");
+  if (!messageId) return NOT_FOUND;
   await notifyBusinessUsers(thread.businessId, `We replied to your message "${thread.subject}".`);
-  queueEmail(() => notifySupportReplyFromAdmin(message.id), "Support reply");
+  queueEmail(() => notifySupportReplyFromAdmin(messageId), "Support reply");
 
   revalidatePath(`/admin/support/${threadId}`);
   revalidatePath("/admin/support");
@@ -106,7 +132,8 @@ export async function adminReplyToThreadAction(threadId: string, _prevState: Act
 export async function setSupportThreadStatusAction(threadId: string, status: string): Promise<void> {
   if (!(await isAdmin())) return;
   if (!THREAD_STATUSES.has(status)) return;
-  await prisma.supportThread.update({ where: { id: threadId }, data: { status } });
+  // updateMany: a thread removed underneath the admin (seed reset, cascade delete) is a no-op instead of a P2025 crash.
+  await prisma.supportThread.updateMany({ where: { id: threadId }, data: { status } });
   revalidatePath(`/admin/support/${threadId}`);
   revalidatePath("/admin/support");
   revalidatePath("/dashboard/support");

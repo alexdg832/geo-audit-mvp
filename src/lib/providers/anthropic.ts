@@ -2,24 +2,36 @@ import { DEFAULT_COMPLETION_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS, withRetry, wit
 import { parseLocation } from "./location";
 import { type AIProvider, type ProviderCitation, ProviderError, providerHttpError } from "./types";
 
+/**
+ * Anthropic Messages API with the server-side web search tool.
+ * web_search_20250305 is still a current tool version ("basic web search") and calls search
+ * directly, which keeps the simple response shape; the 2026 versions default to dynamic
+ * filtering through code execution unless allowed_callers is set.
+ * Docs: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+ */
 const BASE_URL = "https://api.anthropic.com/v1";
 const API_VERSION = "2023-06-01";
 export const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-5";
 export const ANTHROPIC_FAST_MODEL = "claude-haiku-4-5-20251001";
 export const ANTHROPIC_WEB_SEARCH_TOOL = "web_search_20250305";
 
-interface TextBlock {
+interface ContentBlock {
   type: string;
   text?: string;
-  citations?: { type: string; url?: string; title?: string; cited_text?: string }[];
+  citations?: { type: string; url?: string; title?: string | null; cited_text?: string }[];
+  /** web_search_tool_result: a list of results, or a single error object. */
+  content?: unknown;
 }
 
-interface MessagesOutput {
-  content?: TextBlock[];
+export interface MessagesOutput {
+  content?: ContentBlock[];
   model?: string;
   stop_reason?: string;
   error?: { message?: string };
 }
+
+/** Error codes for which a retry can reasonably succeed; the rest are request or quota problems. */
+const RETRYABLE_SEARCH_ERRORS = new Set(["too_many_requests", "unavailable"]);
 
 async function callMessages(apiKey: string, body: Record<string, unknown>, timeoutMs: number, outer?: AbortSignal): Promise<MessagesOutput> {
   return withRetry(async () => {
@@ -41,7 +53,7 @@ async function callMessages(apiKey: string, body: Record<string, unknown>, timeo
   }, { signal: outer });
 }
 
-function extractText(output: MessagesOutput): { text: string; citations: ProviderCitation[] } {
+export function extractText(output: MessagesOutput): { text: string; citations: ProviderCitation[] } {
   let text = "";
   const citations: ProviderCitation[] = [];
   for (const block of output.content ?? []) {
@@ -54,6 +66,17 @@ function extractText(output: MessagesOutput): { text: string; citations: Provide
     }
   }
   return { text, citations };
+}
+
+/** The API answers 200 even when a search fails; the failure sits inside the tool result block. */
+export function searchErrorCodes(output: MessagesOutput): string[] {
+  const codes: string[] = [];
+  for (const block of output.content ?? []) {
+    if (block.type !== "web_search_tool_result") continue;
+    const content = block.content as { type?: string; error_code?: string } | unknown[] | undefined;
+    if (content && !Array.isArray(content) && content.type === "web_search_tool_result_error") codes.push(content.error_code ?? "unknown");
+  }
+  return codes;
 }
 
 export function createAnthropicProvider(apiKey: string): AIProvider {
@@ -76,13 +99,22 @@ export function createAnthropicProvider(apiKey: string): AIProvider {
           ...(loc.country ? { country: loc.country } : {}),
         };
       }
+      // No temperature: current models reject any value other than 1.0, and 1.0 is the default.
       const raw = await callMessages(
         apiKey,
         { model, max_tokens: 1500, messages: [{ role: "user", content: prompt }], tools: [tool] },
         opts.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS,
         opts.signal
       );
+      if (raw.stop_reason === "pause_turn") {
+        throw new ProviderError("anthropic", "Claude paused a long-running search turn", { retryable: true });
+      }
       const { text, citations } = extractText(raw);
+      const errors = searchErrorCodes(raw);
+      if (errors.length > 0 && citations.length === 0) {
+        // Without this the run would be recorded as a clean "business not mentioned" answer.
+        throw new ProviderError("anthropic", `Claude web search failed: ${errors.join(", ")}`, { retryable: errors.every((c) => RETRYABLE_SEARCH_ERRORS.has(c)) });
+      }
       if (!text) throw new ProviderError("anthropic", "Claude returned no text output");
       return { engine: "anthropic", model: raw.model ?? model, answerText: text, citations, latencyMs: Date.now() - started, rawResponse: raw };
     },

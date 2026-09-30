@@ -2,9 +2,17 @@ import { DEFAULT_COMPLETION_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS, withRetry, wit
 import { parseLocation } from "./location";
 import { type AIProvider, type ProviderCitation, ProviderError, providerHttpError } from "./types";
 
+/**
+ * OpenAI Responses API with the hosted web_search tool.
+ * Docs: https://developers.openai.com/api/docs/guides/tools-web-search
+ * The gpt-5 snapshot behind the bare "gpt-5" alias is scheduled for removal on 2026-12-11 with
+ * gpt-5.6-sol as the documented replacement, so that is the default; override with OPENAI_MODEL.
+ */
 const BASE_URL = "https://api.openai.com/v1";
-export const OPENAI_DEFAULT_MODEL = "gpt-5";
+export const OPENAI_DEFAULT_MODEL = "gpt-5.6-sol";
 export const OPENAI_FAST_MODEL = "gpt-5-mini";
+/** Fixed across runs so citation counts are comparable; "medium" is the API default. */
+const SEARCH_CONTEXT_SIZE = "medium";
 
 interface OutputTextPart {
   type: string;
@@ -71,7 +79,7 @@ export function createOpenAIProvider(apiKey: string): AIProvider {
     async query(prompt, opts = {}) {
       const started = Date.now();
       const loc = parseLocation(opts.location);
-      const tool: Record<string, unknown> = { type: "web_search" };
+      const tool: Record<string, unknown> = { type: "web_search", search_context_size: SEARCH_CONTEXT_SIZE };
       if (loc) {
         tool.user_location = {
           type: "approximate",
@@ -80,9 +88,11 @@ export function createOpenAIProvider(apiKey: string): AIProvider {
           ...(loc.region ? { region: loc.region } : {}),
         };
       }
+      // tool_choice "auto" mirrors ChatGPT deciding whether to search; the include flag keeps the
+      // consulted-but-uncited sources in rawResponse (web_search_call.action.sources).
       const raw = await callResponses(
         apiKey,
-        { model, input: prompt, tools: [tool], tool_choice: "auto" },
+        { model, input: prompt, tools: [tool], tool_choice: "auto", include: ["web_search_call.action.sources"] },
         opts.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS,
         opts.signal
       );

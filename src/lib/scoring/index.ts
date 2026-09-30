@@ -1,3 +1,4 @@
+import { isEntityType } from "@/lib/scan/entityTypes";
 import type {
   CapApplied,
   Confidence,
@@ -14,7 +15,7 @@ import type {
   ScoringOutput,
 } from "./types";
 
-export const SCORING_VERSION = "1.0.0";
+export const SCORING_VERSION = "1.1.0";
 
 export const PILLARS: { key: PillarKey; label: string; weight: number; description: string }[] = [
   { key: "ai_visibility", label: "AI Visibility", weight: 30, description: "How often, how prominently and on how many engines AI names you." },
@@ -35,7 +36,7 @@ export const GRADE_BANDS: { min: number; grade: string; tone: "bad" | "mid" | "g
 
 export const CAP_DEFINITIONS = [
   { key: "no_mentions", ceiling: 35, description: "No live engine mentioned the business in any completed answer." },
-  { key: "no_live_engines", ceiling: 40, description: "No AI engine was live during the scan, so visibility could not be measured." },
+  { key: "no_live_engines", ceiling: 40, description: "No engine answer was collected (no engine was live, or every check failed), so visibility could not be measured." },
   { key: "site_unreachable", ceiling: 60, description: "A website was provided but could not be fetched." },
   { key: "crawlers_blocked", ceiling: 70, description: "robots.txt blocks every major AI search crawler." },
 ];
@@ -55,6 +56,13 @@ export const KEY_CRAWLERS = [
 ];
 
 const SEARCH_CRAWLERS = ["OAI-SearchBot", "Claude-SearchBot", "PerplexityBot", "Googlebot"];
+
+/**
+ * Crawlers that fetch pages while an engine is answering: the search indexers plus the live
+ * user-fetch agents. The remaining KEY_CRAWLERS (GPTBot, ClaudeBot, Google-Extended) only gather
+ * training data, so blocking them alone does not stop AI answers from reading the site.
+ */
+const ANSWER_CRAWLERS = [...SEARCH_CRAWLERS, "ChatGPT-User", "Claude-User", "Perplexity-User"];
 
 export function gradeFor(score: number): { grade: string; tone: "bad" | "mid" | "good" } {
   const band = GRADE_BANDS.find((b) => score >= b.min) ?? GRADE_BANDS[GRADE_BANDS.length - 1];
@@ -116,9 +124,13 @@ function positionScore(position: number | null): number {
 const TIER_SCORE: Record<1 | 2 | 3 | 4, number> = { 1: 0.85, 2: 1, 3: 0.6, 4: 0.2 };
 
 export function computeScore(input: ScoringInput): ScoringOutput {
-  const liveEngines = input.engines.filter((e) => e.status === "live");
   const completed = input.runs.filter((r) => r.status === "complete");
   const mentionedRuns = completed.filter((r) => r.mentioned === true);
+  // An engine counts as measured when the roster says it is live OR it returned at least one
+  // answer: an engine tripped by a fatal error after completing runs still contributed evidence,
+  // and its roster status is never promoted back to "live".
+  const measuredEngineIds = new Set([...input.engines.filter((e) => e.status === "live").map((e) => e.id), ...completed.map((r) => r.engine)]);
+  const measuredEngines = measuredEngineIds.size;
   const ids = (runs: RunInput[]) => runs.map((r) => r.id);
   const site = input.site;
   const siteKnown = Boolean(site && site.fetchOk);
@@ -144,11 +156,11 @@ export function computeScore(input: ScoringInput): ScoringOutput {
   const disagreementRate = repeated ? disagreeing / repeated : 0;
   const mentionRate = groupValues.length ? mean(groupValues) : 0;
   const visibilityConfidence: Confidence =
-    completed.length < 4 || liveEngines.length === 0
+    completed.length < 4 || measuredEngines === 0
       ? "low"
       : disagreementRate > 0.5
         ? "low"
-        : disagreementRate > 0.2 || liveEngines.length < 2
+        : disagreementRate > 0.2 || measuredEngines < 2
           ? "medium"
           : "high";
 
@@ -166,7 +178,7 @@ export function computeScore(input: ScoringInput): ScoringOutput {
       confidence: visibilityConfidence,
       finding: completed.length
         ? mentionedRuns.length === 0
-          ? `Not mentioned in any of the ${completed.length} answers collected across ${liveEngines.length} engine${liveEngines.length === 1 ? "" : "s"}.`
+          ? `Not mentioned in any of the ${completed.length} answers collected across ${measuredEngines} engine${measuredEngines === 1 ? "" : "s"}.`
           : `Mentioned in ${pct(mentionRate)} of prompts (median across repeated runs): ${mentionedRuns.length} of ${completed.length} answers.`
         : "No engine answers were collected, so visibility could not be measured.",
       evidence: { runIds: ids(completed) },
@@ -185,7 +197,9 @@ export function computeScore(input: ScoringInput): ScoringOutput {
       confidence: visibilityConfidence,
       finding: mentionedRuns.length
         ? `Named first in ${firstPlace} of ${mentionedRuns.length} answers that mention you; average position score ${pct(prominence)}.`
-        : "Never mentioned, so you hold no position in any answer.",
+        : completed.length
+          ? "Never mentioned, so you hold no position in any answer."
+          : "No engine answers were collected, so position could not be measured.",
       evidence: { runIds: ids(mentionedRuns.length ? mentionedRuns : completed) },
     })
   );
@@ -197,11 +211,12 @@ export function computeScore(input: ScoringInput): ScoringOutput {
       title: "Engine coverage",
       label: "evidence-backed",
       weight: 6,
-      value: liveEngines.length ? enginesWithMention.size / liveEngines.length : null,
-      confidence: liveEngines.length ? visibilityConfidence : "low",
-      finding: liveEngines.length
-        ? `${enginesWithMention.size} of ${liveEngines.length} live engines mentioned you at least once${enginesWithMention.size ? ` (${[...enginesWithMention].map((e) => input.engines.find((x) => x.id === e)?.label ?? e).join(", ")})` : ""}.`
-        : "No engine was live, so coverage could not be measured.",
+      // completed.length > 0 implies measuredEngines > 0, so the division is safe.
+      value: completed.length ? enginesWithMention.size / measuredEngines : null,
+      confidence: completed.length ? visibilityConfidence : "low",
+      finding: completed.length
+        ? `${enginesWithMention.size} of ${measuredEngines} engines mentioned you at least once${enginesWithMention.size ? ` (${[...enginesWithMention].map((e) => input.engines.find((x) => x.id === e)?.label ?? e).join(", ")})` : ""}.`
+        : "No engine answers were collected, so coverage could not be measured.",
       evidence: { runIds: ids(completed) },
     })
   );
@@ -295,7 +310,12 @@ export function computeScore(input: ScoringInput): ScoringOutput {
   const siteConfidence: Confidence = !websiteGiven ? "high" : siteKnown ? (site!.unknown.length ? "medium" : "high") : "low";
   const siteMissing = !websiteGiven ? "No website was provided." : !siteKnown ? `Website could not be fetched (${site?.fetchError ?? "unknown error"}).` : null;
   const siteValue = (v: boolean | null | undefined): number | null => (siteMissing ? (websiteGiven ? null : 0) : v ? 1 : 0);
-  const entityTypes = (site?.schemaTypes ?? []).filter((t) => /Business|Organization|Store|Shop|Restaurant|Dentist|Clinic|Salon|Agency|Contractor|Hotel|School|Studio|Service|Physician|Attorney|Plumber|Electrician/.test(t));
+  // For checks the site scan records as unknown (null) when the file could not be fetched: absence
+  // of evidence is not evidence of absence, so the metric is unmeasured rather than failed.
+  const siteValueOrUnknown = (v: boolean | null | undefined): number | null => (siteMissing ? (websiteGiven ? null : 0) : v === null || v === undefined ? null : v ? 1 : 0);
+  // Same predicate the site scan uses to pick the entity node, so schema_present can never
+  // disagree with schema_nap about whether the page describes the business.
+  const entityTypes = (site?.schemaTypes ?? []).filter(isEntityType);
   metrics.push(
     metric({
       pillar: "entity_clarity",
@@ -505,9 +525,9 @@ export function computeScore(input: ScoringInput): ScoringOutput {
       title: "XML sitemap",
       label: "heuristic",
       weight: 1,
-      value: siteValue(site?.sitemapFound),
-      confidence: siteConfidence,
-      finding: siteMissing ?? (site?.sitemapFound ? `Sitemap found at ${site.sitemapUrl}.` : "No XML sitemap found."),
+      value: siteValueOrUnknown(site?.sitemapFound),
+      confidence: siteKnown && site!.sitemapFound === null ? "low" : siteConfidence,
+      finding: siteMissing ?? (site?.sitemapFound === null ? "The sitemap could not be fetched." : site?.sitemapFound ? `Sitemap found at ${site.sitemapUrl}.` : "No XML sitemap found."),
       evidence: { siteCheckFields: ["sitemapFound", "sitemapUrl"] },
     })
   );
@@ -518,9 +538,9 @@ export function computeScore(input: ScoringInput): ScoringOutput {
       title: "llms.txt",
       label: "heuristic",
       weight: 1,
-      value: siteValue(site?.llmsTxtFound),
-      confidence: siteConfidence,
-      finding: siteMissing ?? (site?.llmsTxtFound ? "An llms.txt file is present." : "No llms.txt file."),
+      value: siteValueOrUnknown(site?.llmsTxtFound),
+      confidence: siteKnown && site!.llmsTxtFound === null ? "low" : siteConfidence,
+      finding: siteMissing ?? (site?.llmsTxtFound === null ? "llms.txt could not be fetched." : site?.llmsTxtFound ? "An llms.txt file is present." : "No llms.txt file."),
       evidence: { siteCheckFields: ["llmsTxtFound"] },
     })
   );
@@ -543,7 +563,16 @@ export function computeScore(input: ScoringInput): ScoringOutput {
   // ---- Competitive Position (10) ----------------------------------------------
   const competitors = [...input.competitors].sort((a, b) => b.runCount - a.runCount);
   const top = competitors[0] ?? null;
-  const sov = completed.length ? (mentionedRuns.length + (top?.runCount ?? 0) > 0 ? mentionedRuns.length / (mentionedRuns.length + (top?.runCount ?? 0)) : 0) : null;
+  // Competitors only exist when the classifier ran. Any detected competitor proves it did; otherwise
+  // fall back to the per-run flag, or to the sentiment/accuracy fields, which mergeAnalysis sets
+  // (even to "not_applicable") only when the classifier produced output.
+  const classifierRuns = completed.filter((r) => r.classifierUsed ?? (r.sentiment !== null || r.accuracy !== null));
+  const competitorsMeasured = competitors.length > 0 || classifierRuns.length > 0;
+  const competitiveConfidence: Confidence = !competitorsMeasured ? "low" : classifierRuns.length < completed.length ? worst("medium", visibilityConfidence) : visibilityConfidence;
+  const unmeasuredCompetitors = "Competitor extraction was unavailable (no classifier engine ran), so this could not be measured.";
+  // Never mentioned is a measured zero whether or not competitors were extracted; a mentioned
+  // business with no competitor extraction has an unknowable share and rank.
+  const sov = !completed.length ? null : mentionedRuns.length === 0 ? 0 : !competitorsMeasured ? null : mentionedRuns.length / (mentionedRuns.length + (top?.runCount ?? 0));
   metrics.push(
     metric({
       pillar: "competitive_position",
@@ -552,20 +581,24 @@ export function computeScore(input: ScoringInput): ScoringOutput {
       label: "evidence-backed",
       weight: 6,
       value: sov,
-      confidence: visibilityConfidence,
+      confidence: competitiveConfidence,
       finding: !completed.length
         ? "No answers collected."
         : top
           ? `You appeared in ${mentionedRuns.length} answers; ${top.name} appeared in ${top.runCount}.`
-          : mentionedRuns.length
-            ? "No competitor was named alongside you."
-            : "Engines named no specific businesses at all.",
+          : !competitorsMeasured
+            ? mentionedRuns.length
+              ? unmeasuredCompetitors
+              : "Never mentioned, so you hold no share of voice."
+            : mentionedRuns.length
+              ? "No competitor was named alongside you."
+              : "Engines named no specific businesses at all.",
       evidence: { competitorIds: top ? [top.id] : [], runIds: ids(mentionedRuns) },
     })
   );
   const ranking = [{ name: input.businessName, runCount: mentionedRuns.length, self: true }, ...competitors.map((c) => ({ name: c.name, runCount: c.runCount, self: false }))].sort((a, b) => b.runCount - a.runCount);
   const rank = ranking.findIndex((r) => r.self) + 1;
-  const rankValue = completed.length ? (mentionedRuns.length === 0 ? 0 : rank === 1 ? 1 : rank === 2 ? 0.6 : rank === 3 ? 0.3 : 0) : null;
+  const rankValue = !completed.length ? null : mentionedRuns.length === 0 ? 0 : !competitorsMeasured ? null : rank === 1 ? 1 : rank === 2 ? 0.6 : rank === 3 ? 0.3 : 0;
   metrics.push(
     metric({
       pillar: "competitive_position",
@@ -574,12 +607,16 @@ export function computeScore(input: ScoringInput): ScoringOutput {
       label: "heuristic",
       weight: 4,
       value: rankValue,
-      confidence: visibilityConfidence,
+      confidence: competitiveConfidence,
       finding: !completed.length
         ? "No answers collected."
         : mentionedRuns.length === 0
-          ? `Unranked: engines named ${competitors.length} other businesses and never you.`
-          : `Ranked #${rank} of ${ranking.length} businesses by how often engines named them.`,
+          ? competitorsMeasured
+            ? `Unranked: engines named ${competitors.length} other businesses and never you.`
+            : "Unranked: engines never named you."
+          : !competitorsMeasured
+            ? unmeasuredCompetitors
+            : `Ranked #${rank} of ${ranking.length} businesses by how often engines named them.`,
       evidence: { competitorIds: competitors.slice(0, 5).map((c) => c.id), runIds: ids(mentionedRuns) },
     })
   );
@@ -602,8 +639,8 @@ export function computeScore(input: ScoringInput): ScoringOutput {
   if (completed.length > 0 && mentionedRuns.length === 0) {
     caps.push({ key: "no_mentions", ceiling: 35, reason: `No live engine mentioned ${input.businessName} in any of ${completed.length} answers.`, evidence: { runIds: ids(completed) } });
   }
-  if (liveEngines.length === 0) {
-    caps.push({ key: "no_live_engines", ceiling: 40, reason: "No AI engine was live during this scan, so visibility is unmeasured.", evidence: { note: input.engines.map((e) => `${e.label}: ${e.status}`).join("; ") } });
+  if (completed.length === 0) {
+    caps.push({ key: "no_live_engines", ceiling: 40, reason: measuredEngines === 0 ? "No AI engine was live during this scan, so visibility is unmeasured." : "No AI engine returned an answer during this scan, so visibility is unmeasured.", evidence: { note: input.engines.map((e) => `${e.label}: ${e.status}`).join("; ") } });
   }
   if (websiteGiven && !siteKnown) {
     caps.push({ key: "site_unreachable", ceiling: 60, reason: `The website ${site?.url} could not be fetched: ${site?.fetchError ?? "unknown error"}.`, evidence: { siteCheckFields: ["fetchOk", "fetchError", "httpStatus"] } });
@@ -616,10 +653,10 @@ export function computeScore(input: ScoringInput): ScoringOutput {
   const { grade } = gradeFor(score);
   const confidence = worst(...pillars.filter((p) => p.weight >= 15).map((p) => p.confidence));
 
-  const criticalFailures = buildCriticalFailures({ input, pillars, mentionedRuns, completed, liveEngines: liveEngines.length, top, tier4Share: relevantCitations.length ? tier4.length / relevantCitations.length : null, tier4, inaccurate, accuracyRuns: accuracyRuns.length, blocked, siteMissing, websiteGiven, entityTypes, noSourceRuns, mentionRate });
+  const criticalFailures = buildCriticalFailures({ input, pillars, metrics, mentionedRuns, completed, liveEngines: measuredEngines, brandRuns: brandRuns.length, top, tier4Share: relevantCitations.length ? tier4.length / relevantCitations.length : null, tier4, inaccurate, accuracyRuns: accuracyRuns.length, blocked, siteMissing, websiteGiven, entityTypes, noSourceRuns, mentionRate });
   const roadmap = buildRoadmap(metrics);
   const costOfInaction = buildCostOfInaction(mentionRate, completed.length > 0);
-  const verdict = buildVerdict({ name: input.businessName, grade, score, mentionRate, mentionedRuns: mentionedRuns.length, completed: completed.length, liveEngines: liveEngines.length, top, criticalFailures });
+  const verdict = buildVerdict({ name: input.businessName, grade, score, mentionRate, mentionedRuns: mentionedRuns.length, completed: completed.length, liveEngines: measuredEngines, top, criticalFailures });
 
   return {
     version: SCORING_VERSION,
@@ -635,7 +672,7 @@ export function computeScore(input: ScoringInput): ScoringOutput {
     roadmap,
     costOfInaction,
     stats: {
-      liveEngines: liveEngines.length,
+      liveEngines: measuredEngines,
       totalRuns: input.runs.length,
       completedRuns: completed.length,
       mentionedRuns: mentionedRuns.length,
@@ -649,9 +686,13 @@ export function computeScore(input: ScoringInput): ScoringOutput {
 interface FailureContext {
   input: ScoringInput;
   pillars: PillarResult[];
+  metrics: MetricResult[];
   mentionedRuns: RunInput[];
   completed: RunInput[];
+  /** Engines with evidence (live, or with at least one completed answer). */
   liveEngines: number;
+  /** Completed direct-brand prompts. */
+  brandRuns: number;
   top: { id: string; name: string; runCount: number } | null;
   tier4Share: number | null;
   tier4: { id: string }[];
@@ -666,42 +707,52 @@ interface FailureContext {
 }
 
 function buildCriticalFailures(ctx: FailureContext): CriticalFailure[] {
+  // Each failure carries the points lost by the sub-metrics it actually describes, so the
+  // "−N pts" badge and the ordering reflect that problem rather than its whole pillar.
   const lost = (key: PillarKey) => {
     const p = ctx.pillars.find((x) => x.key === key)!;
     return round1(p.weight - p.score);
   };
+  const lostMetrics = (...keys: string[]) => round1(keys.reduce((s, k) => s + (ctx.metrics.find((m) => m.metric === k)?.pointsLost ?? 0), 0));
+  // Every metric read from the site scan references siteCheckFields; fact_accuracy does not.
+  const lostSite = round1(ctx.metrics.filter((m) => m.evidence.siteCheckFields?.length).reduce((s, m) => s + m.pointsLost, 0));
   const failures: CriticalFailure[] = [];
   const ids = (runs: RunInput[]) => runs.map((r) => r.id);
 
-  if (ctx.liveEngines === 0) {
-    failures.push({ key: "no_live_engines", title: "No AI engine could be scanned", detail: "Every engine was missing a key or failed, so AI visibility is unmeasured. The score is capped until a real scan runs.", pillar: "ai_visibility", pointsLost: lost("ai_visibility"), evidence: { note: ctx.input.engines.map((e) => `${e.label}: ${e.status}`).join("; ") } });
-  } else if (ctx.completed.length && ctx.mentionedRuns.length === 0) {
-    failures.push({ key: "invisible", title: "AI engines cannot find you", detail: `Across ${ctx.completed.length} answers from ${ctx.liveEngines} engine${ctx.liveEngines === 1 ? "" : "s"}, ${ctx.input.businessName} was never mentioned — not even when asked about you by name.`, pillar: "ai_visibility", pointsLost: lost("ai_visibility"), evidence: { runIds: ids(ctx.completed) } });
-  } else if (ctx.completed.length && ctx.mentionRate < 0.25) {
+  if (ctx.completed.length === 0) {
+    failures.push({ key: "no_live_engines", title: "No AI engine could be scanned", detail: `${ctx.liveEngines === 0 ? "Every engine was missing a key or failed" : "No engine returned an answer"}, so AI visibility is unmeasured. The score is capped until a real scan runs.`, pillar: "ai_visibility", pointsLost: lost("ai_visibility"), evidence: { note: ctx.input.engines.map((e) => `${e.label}: ${e.status}`).join("; ") } });
+  } else if (ctx.mentionedRuns.length === 0) {
+    failures.push({ key: "invisible", title: "AI engines cannot find you", detail: `Across ${ctx.completed.length} answers from ${ctx.liveEngines} engine${ctx.liveEngines === 1 ? "" : "s"}, ${ctx.input.businessName} was never mentioned${ctx.brandRuns ? " — not even when asked about you by name" : ""}.`, pillar: "ai_visibility", pointsLost: lost("ai_visibility"), evidence: { runIds: ids(ctx.completed) } });
+  } else if (ctx.mentionRate < 0.25) {
     failures.push({ key: "mostly_invisible", title: "You are missing from most AI answers", detail: `Engines mentioned you in only ${pct(ctx.mentionRate)} of prompts a customer would ask.`, pillar: "ai_visibility", pointsLost: lost("ai_visibility"), evidence: { runIds: ids(ctx.completed) } });
   }
   if (ctx.top && ctx.top.runCount > ctx.mentionedRuns.length) {
     failures.push({ key: "outranked", title: `AI recommends ${ctx.top.name} instead of you`, detail: `${ctx.top.name} was named in ${ctx.top.runCount} answers; you were named in ${ctx.mentionedRuns.length}.`, pillar: "competitive_position", pointsLost: lost("competitive_position"), evidence: { competitorIds: [ctx.top.id], runIds: ids(ctx.mentionedRuns) } });
   }
   if (ctx.tier4Share !== null && ctx.tier4Share >= 0.4) {
-    failures.push({ key: "low_trust_sources", title: "Your reputation is being defined by low-trust sources", detail: `${pct(ctx.tier4Share)} of the sources behind answers about you are forums, social posts or anonymous pages.`, pillar: "source_authority", pointsLost: lost("source_authority"), evidence: { citationIds: ctx.tier4.map((c) => c.id) } });
+    failures.push({ key: "low_trust_sources", title: "Your reputation is being defined by low-trust sources", detail: `${pct(ctx.tier4Share)} of the sources behind answers about you are forums, social posts or anonymous pages.`, pillar: "source_authority", pointsLost: lostMetrics("citation_quality", "low_trust_dependence"), evidence: { citationIds: ctx.tier4.map((c) => c.id) } });
   }
   if (ctx.mentionedRuns.length && ctx.noSourceRuns.length === ctx.mentionedRuns.length) {
     failures.push({ key: "no_sources", title: "No engine can point to a source for you", detail: `Every answer that mentioned you came with no source at all, so nothing verifiable anchors what AI says.`, pillar: "source_authority", pointsLost: lost("source_authority"), evidence: { runIds: ids(ctx.noSourceRuns) } });
   }
   if (ctx.accuracyRuns && ctx.inaccurate.length / ctx.accuracyRuns >= 0.25) {
-    failures.push({ key: "inaccurate", title: "AI is stating wrong facts about you", detail: `${ctx.inaccurate.length} of ${ctx.accuracyRuns} answers about you conflict with your own published facts.`, pillar: "entity_clarity", pointsLost: lost("entity_clarity"), evidence: { runIds: ids(ctx.inaccurate) } });
+    failures.push({ key: "inaccurate", title: "AI is stating wrong facts about you", detail: `${ctx.inaccurate.length} of ${ctx.accuracyRuns} answers about you conflict with your own published facts.`, pillar: "entity_clarity", pointsLost: lostMetrics("fact_accuracy"), evidence: { runIds: ids(ctx.inaccurate) } });
   }
   if (ctx.websiteGiven && ctx.siteMissing) {
-    failures.push({ key: "site_unreachable", title: "Your website could not be reached", detail: ctx.siteMissing, pillar: "technical_readiness", pointsLost: lost("technical_readiness") + lost("content_answerability"), evidence: { siteCheckFields: ["fetchOk", "fetchError", "httpStatus"] } });
+    failures.push({ key: "site_unreachable", title: "Your website could not be reached", detail: ctx.siteMissing, pillar: "technical_readiness", pointsLost: lostSite, evidence: { siteCheckFields: ["fetchOk", "fetchError", "httpStatus"] } });
   } else if (!ctx.websiteGiven) {
-    failures.push({ key: "no_website", title: "AI has nothing of yours to read", detail: "No website was provided, so every on-site signal scored zero.", pillar: "content_answerability", pointsLost: lost("content_answerability") + lost("entity_clarity") + lost("technical_readiness"), evidence: { note: "No website supplied at scan start." } });
+    failures.push({ key: "no_website", title: "AI has nothing of yours to read", detail: "No website was provided, so every on-site signal scored zero.", pillar: "content_answerability", pointsLost: lostSite, evidence: { note: "No website supplied at scan start." } });
   }
-  if (ctx.blocked.length) {
-    failures.push({ key: "crawlers_blocked", title: "You are blocking the crawlers that feed AI answers", detail: `robots.txt disallows ${ctx.blocked.join(", ")}.`, pillar: "technical_readiness", pointsLost: lost("technical_readiness"), evidence: { siteCheckFields: ["robots"] } });
+  // Only crawlers that fetch pages while answering justify a critical failure; blocking the
+  // training-only agents costs crawler_access points but does not stop AI answers reading the site.
+  const answerBlocked = ctx.blocked.filter((a) => ANSWER_CRAWLERS.includes(a));
+  if (answerBlocked.length) {
+    const trainingBlocked = ctx.blocked.filter((a) => !ANSWER_CRAWLERS.includes(a));
+    failures.push({ key: "crawlers_blocked", title: "You are blocking the crawlers that feed AI answers", detail: `robots.txt disallows ${answerBlocked.join(", ")}${trainingBlocked.length ? ` (and the training-only crawlers ${trainingBlocked.join(", ")})` : ""}.`, pillar: "technical_readiness", pointsLost: lostMetrics("crawler_access"), evidence: { siteCheckFields: ["robots"] } });
   }
   if (ctx.websiteGiven && !ctx.siteMissing && ctx.entityTypes.length === 0) {
-    failures.push({ key: "no_schema", title: "AI has no structured facts about your business", detail: "Your homepage carries no Organization or LocalBusiness structured data, so AI must guess who and where you are.", pillar: "entity_clarity", pointsLost: lost("entity_clarity"), evidence: { siteCheckFields: ["schemaTypes"] } });
+    // Without an entity node there is nothing to carry the NAP either, so both metrics are lost.
+    failures.push({ key: "no_schema", title: "AI has no structured facts about your business", detail: "Your homepage carries no Organization or LocalBusiness structured data, so AI must guess who and where you are.", pillar: "entity_clarity", pointsLost: lostMetrics("schema_present", "schema_nap"), evidence: { siteCheckFields: ["schemaTypes"] } });
   }
   return failures.sort((a, b) => b.pointsLost - a.pointsLost).slice(0, 6);
 }
@@ -736,8 +787,10 @@ const FIX_STEPS: Record<string, { title: string; effort: RoadmapItem["effort"]; 
 };
 
 function buildRoadmap(metrics: MetricResult[]): RoadmapItem[] {
+  // An unmeasured metric (value null) is not a confirmed problem, so it gets no fix steps;
+  // its own finding and the critical failures already report why it could not be assessed.
   return metrics
-    .filter((m) => m.pointsLost > 0)
+    .filter((m) => m.value !== null && m.pointsLost > 0)
     .sort((a, b) => b.pointsLost - a.pointsLost)
     .slice(0, 10)
     .map((m, i) => {
@@ -771,8 +824,8 @@ function buildCostOfInaction(mentionRate: number, measured: boolean): CostOfInac
 
 function buildVerdict(ctx: { name: string; grade: string; score: number; mentionRate: number; mentionedRuns: number; completed: number; liveEngines: number; top: { name: string; runCount: number } | null; criticalFailures: CriticalFailure[] }): string {
   const parts: string[] = [];
-  if (ctx.liveEngines === 0) {
-    parts.push(`No AI engine could be queried, so ${ctx.name}'s visibility is unmeasured and the score reflects website signals only.`);
+  if (ctx.completed === 0) {
+    parts.push(`No AI engine ${ctx.liveEngines === 0 ? "could be queried" : "returned an answer"}, so ${ctx.name}'s visibility is unmeasured and the score reflects website signals only.`);
   } else if (ctx.mentionedRuns === 0) {
     parts.push(`Right now AI engines do not recommend ${ctx.name} at all: across ${ctx.completed} answers on ${ctx.liveEngines} engine${ctx.liveEngines === 1 ? "" : "s"}, it was never mentioned.`);
   } else {

@@ -41,6 +41,11 @@ export interface RunInput {
   noCitations: boolean;
   citations: CitationInput[];
   competitorNames: string[];
+  /**
+   * Whether the classifier pass ran on this answer (EngineRun.analysis.classifierUsed). Optional:
+   * when omitted the scoring infers it from sentiment/accuracy, which are set only by the classifier.
+   */
+  classifierUsed?: boolean | null;
 }
 
 export interface CompetitorInput {
@@ -143,6 +148,7 @@ export interface ScoringOutput {
   roadmap: RoadmapItem[];
   costOfInaction: CostOfInaction;
   stats: {
+    /** Engines with evidence: roster status "live", or at least one completed answer. */
     liveEngines: number;
     totalRuns: number;
     completedRuns: number;

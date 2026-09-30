@@ -795,13 +795,13 @@ export async function checkScanRateLimit(requesterIpHash: string | null): Promis
   return null;
 }
 
-/** Per-business cooldown for re-runs: a fresh scan of the same business inside the window is refused, whatever the last one's outcome. */
+/** Per-business cooldown for re-runs: a fresh scan of the same business inside the window is refused. A failed scan does not count, so it can be retried at once. */
 export async function checkRerunCooldown(businessId: string, now = Date.now()): Promise<string | null> {
   const minutes = Number(process.env.SCAN_RERUN_COOLDOWN_MINUTES ?? 60);
   if (!(minutes > 0)) return null;
   const windowMs = minutes * 60 * 1000;
   const latest = await prisma.audit.findFirst({
-    where: { businessId, scanVersion: { not: null }, createdAt: { gte: new Date(now - windowMs) } },
+    where: { businessId, scanVersion: { not: null }, status: { not: "failed" }, createdAt: { gte: new Date(now - windowMs) } },
     orderBy: { createdAt: "desc" },
     select: { createdAt: true },
   });

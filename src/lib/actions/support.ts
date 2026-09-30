@@ -1,5 +1,6 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
@@ -58,14 +59,15 @@ async function appendMessage(
   status: "open" | "answered"
 ): Promise<string | null> {
   const now = new Date();
+  // The id is chosen here rather than read back, so two messages in the same millisecond can never be confused.
+  const id = randomUUID();
   try {
-    const thread = await prisma.supportThread.update({
+    await prisma.supportThread.update({
       where,
-      data: { status, lastMessageAt: now, messages: { create: { ...message, createdAt: now } } },
-      // createdAt is written and read back at millisecond precision, so this picks out the message just created.
-      select: { messages: { where: { createdAt: now }, take: 1, select: { id: true } } },
+      data: { status, lastMessageAt: now, messages: { create: { id, ...message, createdAt: now } } },
+      select: { id: true },
     });
-    return thread.messages[0]?.id ?? null;
+    return id;
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") return null;
     throw err;

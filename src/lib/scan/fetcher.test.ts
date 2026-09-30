@@ -179,8 +179,10 @@ describe("createPinnedLookup", () => {
     const [err] = await call("other.example", { all: true });
     expect(err).toBeInstanceOf(Error);
     expect((err as NodeJS.ErrnoException).code).toBe("ENOTFOUND");
-    const [err2] = await call("example.com", { family: 5 });
-    expect(err2).toBeNull();
+    // A host validated only over IPv4 must fail closed for an IPv6 request rather than fall back to anything.
+    const v4only = createPinnedLookup(new Map([["v4only.example", [{ address: "93.184.216.34", family: 4 as const }]]]));
+    const [err2] = await new Promise<unknown[]>((resolve) => v4only("v4only.example", { family: 6 }, (...args) => resolve(args)));
+    expect((err2 as NodeJS.ErrnoException | null)?.code).toBe("ENOTFOUND");
   });
 });
 

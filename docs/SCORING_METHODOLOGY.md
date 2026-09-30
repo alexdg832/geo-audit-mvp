@@ -39,7 +39,7 @@ Confidence is reported per pillar and overall (`high`, `medium`, `low`):
 - **Visibility**: `low` if fewer than 4 answers were collected or no engine has evidence, or if more than 50 % of repeated engine × prompt pairs disagree; `medium` if 20–50 % disagree or only one engine has evidence; otherwise `high`.
 - **Competitive position**: as visibility, but `low` when competitors were never extracted (no classifier engine ran on any answer and no competitor was detected) and at most `medium` when the classifier ran on only some of the answers.
 - **Source authority**: by the number of sources behind answers that mention the business — `high` ≥ 10, `medium` ≥ 4, else `low`.
-- **Site-based pillars**: `low` if a website was given but could not be fetched; `medium` if some checks (robots, llms.txt, sitemap) could not complete; otherwise `high`. With no website at all the checks are definitively zero, so confidence is `high`.
+- **Site-based pillars**: `low` if a website was given but could not be fetched, and `low` for any metric whose check (robots, llms.txt, sitemap) could not complete, which pulls its pillar to `low` because a pillar takes the worst confidence among its metrics; otherwise `high`. With no website at all the checks are definitively zero, so confidence is `high`.
 - **Fact accuracy**: by sample size — `high` ≥ 6 checked answers, `medium` ≥ 3, else `low`.
 - **Overall** = the worst confidence among the four heaviest pillars (visibility, source authority, entity clarity, content answerability).
 
@@ -52,7 +52,7 @@ Weights are the starting hypothesis from the brief, kept after research review; 
 | Sub-metric | Weight | Value | Label |
 |---|---|---|---|
 | Mention rate | 15 | Mean over prompts of the median mention across repeated runs | evidence-backed |
-| Prominence when mentioned | 6 | Mean position score over mentioning answers: 1st = 1, 2nd = 0.75, 3rd = 0.5, 4th–5th = 0.3, later = 0.15, unknown position = 0.5 | evidence-backed |
+| Prominence when mentioned | 6 | Mean position score over mentioning answers: 1st = 1, 2nd = 0.75, 3rd = 0.5, 4th–5th = 0.3, later = 0.15, unknown position = 0.5 | heuristic |
 | Engine coverage | 6 | Engines with evidence that mentioned the business at least once ÷ engines with evidence; `null` when no answer was collected | evidence-backed |
 | Direct brand recognition | 3 | Mention rate over the direct-brand prompts only | heuristic |
 
@@ -62,9 +62,9 @@ Computed over the citations behind answers that mention the business. If the bus
 
 | Sub-metric | Weight | Value | Label |
 |---|---|---|---|
-| Trust tier of supporting sources | 10 | Mean tier score: tier 1 = 0.85, tier 2 = 1.0, tier 3 = 0.6, tier 4 = 0.2 | evidence-backed |
+| Trust tier of supporting sources | 10 | Mean tier score: tier 1 = 0.85, tier 2 = 1.0, tier 3 = 0.6, tier 4 = 0.2 | heuristic |
 | Your own site is cited | 5 | Mentioning answers with sources that cite the business's own domain ÷ mentioning answers with sources | evidence-backed |
-| Independence from low-trust sources | 5 | 1 − (tier-4 citations ÷ all supporting citations) | evidence-backed |
+| Independence from low-trust sources | 5 | 1 − (tier-4 citations ÷ all supporting citations) | heuristic |
 
 Trust tiers (assigned by domain in [src/lib/scan/sources.ts](../src/lib/scan/sources.ts); unknown domains default to tier 3):
 
@@ -77,9 +77,9 @@ Trust tiers (assigned by domain in [src/lib/scan/sources.ts](../src/lib/scan/sou
 
 | Sub-metric | Weight | Value | Label |
 |---|---|---|---|
-| Structured business data | 5 | 1 if the homepage JSON-LD carries a business entity type. The test is `isEntityType` in [src/lib/scan/entityTypes.ts](../src/lib/scan/entityTypes.ts) (the full schema.org LocalBusiness/Organization family plus a pattern for custom subtypes), the same predicate the site scan uses to pick the entity node, so this metric and the NAP metric can never disagree | evidence-backed |
-| Name, phone and address in structured data | 3 | 1 if the entity node has a name and a telephone or address | evidence-backed |
-| Contact details visible | 3 | 1 if a phone, address or email is visible on the homepage | evidence-backed |
+| Structured business data | 5 | 1 if the homepage JSON-LD carries a business entity type. The test is `isEntityType` in [src/lib/scan/entityTypes.ts](../src/lib/scan/entityTypes.ts) (the full schema.org LocalBusiness/Organization family plus a pattern for custom subtypes), the same predicate the site scan uses to pick the entity node, so this metric and the NAP metric can never disagree | heuristic |
+| Name, phone and address in structured data | 3 | 1 if the entity node has a name and a telephone or address | heuristic |
+| Contact details visible | 3 | 1 if a phone, address or email is visible on the homepage | heuristic |
 | Descriptive title and meta description | 2 | 0.5 each | heuristic |
 | Accuracy of what AI says about you | 2 | Mean over checked answers: accurate = 1, unverifiable = 0.7, inaccurate = 0 | evidence-backed |
 
@@ -116,8 +116,8 @@ Both are 0 when the business was never mentioned, whatever else the engines name
 
 ## 4. Evidence-backed vs heuristic
 
-- **Evidence-backed**: the criterion is a direct measurement of engine behaviour (mentions, positions, sources, accuracy) or is supported by engine documentation or a study with a stated method (crawler access, structured data, rendering, hours for local queries, source trust tiers). Sources: [GEO_RESEARCH.md](GEO_RESEARCH.md) §1–§6.
-- **Heuristic**: sound practice whose direct effect on AI answers is not demonstrated by the research (titles, headings, word count, FAQ, About page, sitemap, llms.txt, speed, rank weighting, direct-brand prompts). They carry small weights on purpose; llms.txt in particular is scored at one point because no engine has documented reading it.
+- **Evidence-backed**: the criterion is a direct measurement of engine behaviour defined by an industry standard (the IAB mention-rate and citation-rate definitions: mentions, engine coverage, own-site citations, accuracy against verified facts, share of voice) or rests on an engine's own documentation (crawler access for OAI-SearchBot, Claude-SearchBot, PerplexityBot and Googlebot; business facts readable in raw HTML; HTTPS).
+- **Heuristic**: sound practice whose direct effect on AI answers is correlational or undemonstrated in the research: position of the mention, direct-brand prompts, source trust tiers and independence from low-trust sources (tier placement is a synthesis of vendor studies), structured data and visible contact details (Google states structured data is not required), titles, headings, word count, FAQ, About page, sitemap, llms.txt (Google ignores it), speed and rank weighting. They carry small weights on purpose so that evidence-backed measurements dominate the score.
 
 The customer-facing "How we score" panel shows the same labels next to every sub-metric.
 

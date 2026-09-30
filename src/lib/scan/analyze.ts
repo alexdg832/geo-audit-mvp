@@ -23,7 +23,8 @@ export interface ClassifierBusiness {
 }
 
 export interface ClassifierOutput {
-  mentioned: boolean;
+  /** null when the classifier gave no usable verdict (key missing or not a boolean); the text match then stands. */
+  mentioned: boolean | null;
   sentiment: "positive" | "neutral" | "negative" | "mixed" | "not_applicable";
   accuracy: "accurate" | "inaccurate" | "unverifiable" | "not_applicable";
   accuracyNotes: string;
@@ -45,6 +46,8 @@ export interface AnswerAnalysis extends DeterministicAnalysis {
 // Trailing position only: "PC Repair Shop" and "Co-op Market" keep their first word, "Smith DDS, PC" loses both suffixes.
 const LEGAL_SUFFIXES =
   /(?:[^\p{L}\p{N}]+(?:llc|l\.l\.c\.?|inc\.?|incorporated|ltd\.?|limited|co\.?|corp\.?|corporation|pllc|p\.c\.?|pc|dds|d\.d\.s\.?|md|m\.d\.?|pa|p\.a\.?|lp|llp|gmbh|plc))+[^\p{L}\p{N}]*$/iu;
+
+const ARTICLES = new Set(["the", "a", "an"]);
 
 const GENERIC_TOKENS = new Set([
   "the", "of", "and", "a", "an", "at", "in", "for", "family", "group", "associates", "center", "centre", "clinic",
@@ -80,7 +83,9 @@ export function buildMentionRegex(name: string): RegExp | null {
   let emittedRequired = 0;
   tokens.forEach((token, i) => {
     const core = `${escapeRegex(token)}(?:'s)?`;
-    const optional = optionalAllowed && GENERIC_TOKENS.has(token);
+    // A leading article never anchors anything ("The Pizza Company" is written "Pizza Company"), so it is optional
+    // even when only one distinctive word remains: the generic word after it is still required.
+    const optional = (optionalAllowed && GENERIC_TOKENS.has(token)) || (i === 0 && tokens.length > 1 && ARTICLES.has(token));
     const isLast = i === tokens.length - 1;
     if (optional) {
       if (isLast) pattern += `(?:${SEP}${core})?`;
@@ -148,7 +153,6 @@ interface Span {
 }
 
 const SENTENCE_BREAK = /\. |\n|! |\? /g;
-const CLAUSE_BREAK = /, |; |—|–/g;
 
 function splitSpans(answer: string, window: Span, breaks: RegExp): Span[] {
   const spans: Span[] = [];
@@ -167,28 +171,33 @@ function spanIndexAt(spans: Span[], index: number): number {
   return i === -1 ? spans.length - 1 : i;
 }
 
-/**
- * The clause naming the business, within its sentence. A caveat in a later clause ("..., though I don't have
- * information about its pricing") does not taint the mention. When the name only introduces its clause
- * ("As for X, ..." / "X — ..."), the statement about it is the next clause, so that one is included too.
- */
-function clauseAround(answer: string, match: MentionMatch): string {
+/** The sentence naming the business (a list item counts as its own sentence). */
+function sentenceAround(answer: string, match: MentionMatch): string {
   const sentences = splitSpans(answer, { start: 0, end: answer.length }, SENTENCE_BREAK);
-  const sentence = {
-    start: sentences[spanIndexAt(sentences, match.start)].start,
-    end: sentences[spanIndexAt(sentences, match.end - 1)].end,
-  };
-  const clauses = splitSpans(answer, sentence, CLAUSE_BREAK);
-  const first = spanIndexAt(clauses, match.start);
-  let last = spanIndexAt(clauses, match.end - 1);
-  if (last + 1 < clauses.length && !/[\p{L}\p{N}]/u.test(answer.slice(match.end, clauses[last].end))) last += 1;
-  return answer.slice(clauses[first].start, clauses[last].end);
+  const start = sentences[spanIndexAt(sentences, match.start)].start;
+  const end = sentences[spanIndexAt(sentences, match.end - 1)].end;
+  return answer.slice(start, end);
 }
 
-/** True when the clause naming the business only says the engine has no information about it. */
+/** "No information about its pricing" is a caveat about one attribute of a business the answer does describe. */
+const ATTRIBUTE_CAVEAT =
+  /\b(?:about|on|regarding|of|for)\s+(?:its|their|the(?:ir)?|specific|current|exact)\s+(?:pric\w*|rates?|fees?|costs?|hours|schedule|menu|reviews?|ratings?|services?|classes|instructors?|address|location|website|phone|contact)\b/i;
+
+/**
+ * True when the sentence naming the business says the engine has no information about it. The whole sentence is
+ * checked rather than one clause, because the caveat sits before or after the name freely ("X in Rancho, but I
+ * couldn't find details"); an over-reported mention is the costlier mistake for an audit. A caveat about a single
+ * attribute of an otherwise described business is not an echo.
+ */
 export function isEchoOnly(answer: string, match: MentionMatch): boolean {
-  const clause = clauseAround(answer, match);
-  return NO_INFO_PATTERNS.some((p) => p.test(clause));
+  const sentence = sentenceAround(answer, match);
+  for (const pattern of NO_INFO_PATTERNS) {
+    const m = pattern.exec(sentence);
+    if (!m) continue;
+    if (ATTRIBUTE_CAVEAT.test(sentence.slice(m.index, m.index + m[0].length + 60))) continue;
+    return true;
+  }
+  return false;
 }
 
 export function analyzeDeterministic(answer: string, name: string, domain: string | null): DeterministicAnalysis {
@@ -255,10 +264,17 @@ function extractJson(text: string): string | null {
 const SENTIMENTS = new Set(["positive", "neutral", "negative", "mixed", "not_applicable"]);
 const ACCURACIES = new Set(["accurate", "inaccurate", "unverifiable", "not_applicable"]);
 
-/** Strict: only `true` or the string "true" count, since Boolean("false") is true. */
-function parseBoolean(value: unknown): boolean {
+/**
+ * Booleans as a model actually writes them: true/false, "true"/"false", "yes"/"no". Anything else (missing key,
+ * a sentence) is null, i.e. no verdict, so it can never be mistaken for a deliberate "false". Boolean("false") is true.
+ */
+function parseTriState(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
-  return typeof value === "string" && value.trim().toLowerCase() === "true";
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  if (v === "true" || v === "yes") return true;
+  if (v === "false" || v === "no") return false;
+  return null;
 }
 
 export function parseClassifierOutput(text: string): ClassifierOutput | null {
@@ -272,14 +288,14 @@ export function parseClassifierOutput(text: string): ClassifierOutput | null {
           .map((b) => ({
             name: String(b.name ?? "").trim(),
             domain: typeof b.domain === "string" && b.domain.trim() ? b.domain.trim().toLowerCase().replace(/^www\./, "") : null,
-            isTarget: parseBoolean(b.isTarget),
+            isTarget: parseTriState(b.isTarget) === true,
           }))
           .filter((b) => b.name.length > 0)
       : [];
     const sentiment = SENTIMENTS.has(String(raw.sentiment)) ? (raw.sentiment as ClassifierOutput["sentiment"]) : "not_applicable";
     const accuracy = ACCURACIES.has(String(raw.accuracy)) ? (raw.accuracy as ClassifierOutput["accuracy"]) : "not_applicable";
     return {
-      mentioned: parseBoolean(raw.mentioned),
+      mentioned: parseTriState(raw.mentioned),
       sentiment,
       accuracy,
       accuracyNotes: typeof raw.accuracyNotes === "string" ? raw.accuracyNotes.trim() : "",
@@ -326,19 +342,24 @@ export function mergeAnalysis(
   // The classifier listed the target among the businesses the answer names: structured corroboration of its verdict.
   const targetListed = mentionPosition !== null;
   let mentioned: boolean;
-  if (!classifier) {
+  if (!classifier || classifier.mentioned === null) {
+    // No classifier, or one that gave no usable verdict: the text match stands.
     mentioned = deterministic.mentioned;
   } else if (classifier.mentioned) {
     // The deterministic echo guard yields only to a corroborated classifier; a bare "mentioned: true" cannot lift it.
     mentioned = !deterministic.echoOnly || targetListed;
   } else {
-    // A classifier "not mentioned" vetoes the text match when its structure agrees: it flagged a namesake (ambiguity)
+    // An explicit "not mentioned" vetoes the text match when its structure agrees: it flagged a namesake (ambiguity)
     // or left the target out of the businesses list. Inconsistent output (target listed, no ambiguity) trusts the text.
     mentioned = deterministic.mentioned && classifier.ambiguity === null && targetListed;
   }
   return {
     ...deterministic,
     mentioned,
+    // A vetoed match keeps no span: mentioned=false always means "nothing to highlight".
+    mentionCount: mentioned ? deterministic.mentionCount : 0,
+    mentionStart: mentioned ? deterministic.mentionStart : null,
+    mentionEnd: mentioned ? deterministic.mentionEnd : null,
     mentionPosition: mentioned ? (mentionPosition ?? deterministic.listRank) : null,
     sentiment: classifier ? (mentioned ? classifier.sentiment : "not_applicable") : null,
     accuracy: classifier ? (mentioned ? classifier.accuracy : "not_applicable") : null,

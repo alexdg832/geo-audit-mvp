@@ -1,5 +1,6 @@
-// Fails the build if this module (and the PrismaClient it constructs) is ever pulled into a client bundle.
-import "server-only";
+// Server-side only by construction: client components import view-model types from
+// src/lib/report/format.ts, never from modules that reach this file. (A "server-only" import
+// would also break the seed and maintenance scripts, which run under plain Node.)
 import { PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as unknown as {

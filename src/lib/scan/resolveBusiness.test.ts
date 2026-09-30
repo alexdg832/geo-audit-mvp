@@ -83,8 +83,8 @@ describe("resolveOwnDomain", () => {
     expect(resolveOwnDomain("mybiz.com", "linktr.ee")).toEqual({ domain: "mybiz.com", redirectDomain: "linktr.ee" });
   });
 
-  it("keeps the typed domain when the site redirects to any other domain", () => {
-    expect(resolveOwnDomain("mybiz.com", "mybiz.net")).toEqual({ domain: "mybiz.com", redirectDomain: "mybiz.net" });
+  it("adopts the live domain when the site migrated to another ordinary domain, recording the hop", () => {
+    expect(resolveOwnDomain("mybiz.com", "mybiz.net")).toEqual({ domain: "mybiz.net", redirectDomain: "mybiz.net" });
   });
 
   it("follows www and subdomain hops within the same site", () => {

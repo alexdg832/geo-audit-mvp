@@ -160,16 +160,31 @@ describe("scanSite sitemap discovery", () => {
     expect(tried).toEqual([`${ORIGIN}/sitemap_index.xml`, `${ORIGIN}/sitemap.xml`]);
   });
 
-  it("marks the sitemap unknown when a candidate could not be fetched at all", async () => {
+  it("marks the sitemap unknown only when no candidate answered at all", async () => {
     route({
       [`${ORIGIN}/`]: ok(`${ORIGIN}/`, page([])),
       [`${ORIGIN}/robots.txt`]: robotsWith("https://dead.example.net/sitemap.xml"),
       ["https://dead.example.net/sitemap.xml"]: miss("https://dead.example.net/sitemap.xml", null),
+      [`${ORIGIN}/sitemap.xml`]: miss(`${ORIGIN}/sitemap.xml`, null),
+      [`${ORIGIN}/sitemap_index.xml`]: miss(`${ORIGIN}/sitemap_index.xml`, null),
     });
     const result = await scanSite("example.com");
     expect(result.sitemapFound).toBeNull();
     expect(result.sitemapUrl).toBeNull();
     expect(result.unknown).toContain("sitemap");
+  });
+
+  it("treats a definitive 404 on the conventional path as 'no sitemap' even if a stale declared host is dead", async () => {
+    route({
+      [`${ORIGIN}/`]: ok(`${ORIGIN}/`, page([])),
+      [`${ORIGIN}/robots.txt`]: robotsWith("https://dead.example.net/sitemap.xml"),
+      ["https://dead.example.net/sitemap.xml"]: miss("https://dead.example.net/sitemap.xml", null),
+      [`${ORIGIN}/sitemap.xml`]: miss(`${ORIGIN}/sitemap.xml`, 404),
+      [`${ORIGIN}/sitemap_index.xml`]: miss(`${ORIGIN}/sitemap_index.xml`, 404),
+    });
+    const result = await scanSite("example.com");
+    expect(result.sitemapFound).toBe(false);
+    expect(result.unknown).not.toContain("sitemap");
   });
 });
 

@@ -50,7 +50,8 @@ const TIME = String.raw`(?:\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|\d{1,2}:\d
 const TIME_RANGE = String.raw`${TIME}\s*(?:[-–—]|to|until|till|through|thru)\s*${TIME}`;
 const DAY = String.raw`(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?|m\s*[-–—]\s*f`;
 /** "Mon–Fri 9am–5pm", "Monday: 9:00 AM - 5:00 PM". A start AND end time is required so an event time ("Sat 7pm concert") does not count. */
-const DAY_HOURS_REGEX = new RegExp(String.raw`\b(?:${DAY})\s*(?:(?:[-–—]|to|through|thru)\s*(?:${DAY}))?\s*[:\s]*${TIME_RANGE}`, "i");
+// One filler word is tolerated between the day part and the time range ("Mon-Fri from 9am to 5pm").
+const DAY_HOURS_REGEX = new RegExp(String.raw`\b(?:${DAY})\s*(?:(?:[-–—]|to|through|thru)\s*(?:${DAY}))?\s*[:\s]*(?:(?:from|open|hours?|are|is)\s+)?${TIME_RANGE}`, "i");
 /** "Open daily 9am-5pm", "Hours: 9:00 AM - 5:00 PM", "We are open every day from 8am to 6pm". */
 const LABEL_HOURS_REGEX = new RegExp(String.raw`\b(?:hours?|open|opening|daily|every ?day|weekdays|weekends|7 days a week)\b[^.\n]{0,40}?${TIME_RANGE}`, "i");
 /** "Open 24 hours", "24/7 emergency service". */
@@ -344,6 +345,7 @@ export async function scanSite(websiteInput: string | null): Promise<SiteScanRes
   });
   const candidates = Array.from(new Set([...declared, `${origin}/sitemap.xml`, `${origin}/sitemap_index.xml`]));
   let sawUnknown = false;
+  let sawDefinitive = false;
   for (const candidate of candidates) {
     // Shorter per-attempt deadline than the default: up to five sequential fetches must stay
     // well inside the site stage lease.
@@ -353,11 +355,13 @@ export async function scanSite(websiteInput: string | null): Promise<SiteScanRes
       result.sitemapUrl = candidate;
       break;
     }
-    if (!res.status) sawUnknown = true;
+    if (res.status) sawDefinitive = true;
+    else sawUnknown = true;
   }
   if (!result.sitemapFound) {
     result.sitemapUrl = null;
-    if (sawUnknown) result.unknown.push("sitemap");
+    // A definitive answer (404 on /sitemap.xml) settles it even when a stale declared sitemap host timed out.
+    if (sawUnknown && !sawDefinitive) result.unknown.push("sitemap");
     else result.sitemapFound = false;
   }
 

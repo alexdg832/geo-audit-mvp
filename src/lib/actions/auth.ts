@@ -8,7 +8,8 @@ import { ActionState } from "./types";
 
 // Only a same-origin path under /dashboard may follow a login: no scheme, no "//" host, no backslash or control characters.
 // (Kept local because a "use server" file may only export async functions.)
-const NEXT_PATH = /^\/dashboard(?:[/?#][^\s\\]*)?$/;
+// Same-origin path under /dashboard, printable ASCII only (no whitespace, backslash, control or non-ASCII bytes).
+const NEXT_PATH = /^\/dashboard(?:[/?#][\x21-\x5b\x5d-\x7e]*)?$/;
 
 function nextPath(raw: FormDataEntryValue | null): string {
   const value = typeof raw === "string" ? raw : "";

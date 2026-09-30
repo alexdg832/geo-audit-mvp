@@ -17,10 +17,10 @@ import { siteConfig } from "@config/site";
 // rerunAuditAction kicks the first scan tick with after(); it runs up to this limit.
 export const maxDuration = 120;
 
-export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ booked?: string }> }) {
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ booked?: string; error?: string }> }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const { booked } = await searchParams;
+  const { booked, error } = await searchParams;
 
   const [latestAudit, runningAudit, contentPushes, threadCount, repliesWaiting] = await Promise.all([
     prisma.audit.findFirst({
@@ -66,6 +66,11 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           </form>
         </div>
       </header>
+
+      {error && (
+        // Set by rerunAuditAction when a re-run is refused (rate limit or cooldown); rendered as text, never markup.
+        <p className="mb-6 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-900">{error.slice(0, 300)}</p>
+      )}
 
       {booked === "1" && (
         <p className="mb-6 rounded-xl border border-green-200 bg-green-50 p-3 text-sm text-green-900">

@@ -35,7 +35,7 @@ const KEYWORD_CATEGORIES: [RegExp, string][] = [
   [/\b(dealer|dealership|motors|auto sales|car sales|used cars|pre-?owned|automotive group)\b/i, "car dealership"],
   [/\binsurance\b/i, "insurance agency"],
   [/\b(auto|automotive)\b/i, "auto repair shop"],
-  [/\b(kitchens? (?:&|and) baths?|kitchen remodel\w*|bath(?:room)? remodel\w*|remodel(?:ing|ers?|s)?|renovations?|cabinets?|countertops?)\b/i, "remodeling contractor"],
+  [/\b(kitchens? (?:&|and) baths?|kitchen remodel\w*|bath(?:room)? remodel\w*|remodel(?:ing|ers?|s)?|renovations?)\b/i, "remodeling contractor"],
   [/\b(pizza|pizzeria)\b/i, "pizza restaurant"],
   [/\b(sushi|ramen|thai|taqueria|tacos|bbq|barbecue|steakhouse|grille?|bistro|diner|eatery|tavern|pub|kitchen|restaurant|cantina|trattoria)\b/i, "restaurant"],
   [/\b(coffee|espresso|roasters|cafe|café)\b/i, "coffee shop"],
@@ -74,7 +74,7 @@ const KEYWORD_CATEGORIES: [RegExp, string][] = [
   [/\b(bank|credit union)\b/i, "bank"],
   [/\b(church|ministry|parish)\b/i, "church"],
   [/\b(boutique|apparel|clothing)\b/i, "clothing store"],
-  [/\bjewel(ry|ery|ers?|s)?\b/i, "jewelry store"],
+  [/\bjewel(?:le)?(ry|ery|ers?|s)?\b/i, "jewelry store"],
   [/\bfurniture\b/i, "furniture store"],
   [/\bhardware\b/i, "hardware store"],
   [/\b(grocery|grocer|supermarket|foods|farmers market|food market)\b/i, "grocery store"],
@@ -110,11 +110,12 @@ function isSameSite(a: string, b: string): boolean {
 }
 
 /**
- * Decides which domain counts as the business's own. It is the domain the owner typed:
- * a redirect that leaves that site (to Facebook, Linktree, a Google page, or any other
- * domain) is recorded but never adopted, because every citation of the target would then
- * score as Tier 1 "own site" and the mention regex would match the platform's name. A
- * typed address that is itself a shared platform yields no owned domain at all.
+ * Decides which domain counts as the business's own. A redirect onto a shared platform
+ * (Facebook, Linktree, a Google page, ...) is recorded but never adopted, because every
+ * citation of the platform would then score as Tier 1 "own site" and the mention regex
+ * would match the platform's name. A redirect onto another ordinary domain is a site
+ * migration (mybiz.com → mybiz.net), so the live domain is adopted and the hop recorded.
+ * A typed address that is itself a shared platform yields no owned domain at all.
  */
 export function resolveOwnDomain(
   inputDomain: string | null,
@@ -128,6 +129,7 @@ export function resolveOwnDomain(
       domain = finalDomain.length < inputDomain.length ? finalDomain : inputDomain;
     } else {
       redirectDomain = finalDomain;
+      if (!isKnownPlatformDomain(finalDomain)) domain = finalDomain;
     }
   }
   if (domain && isKnownPlatformDomain(domain)) domain = null;

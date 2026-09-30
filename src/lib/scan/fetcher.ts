@@ -185,7 +185,8 @@ export function createPinnedLookup(pins: ReadonlyMap<string, ResolvedAddress[]>)
 
 /** An undici Agent whose sockets connect only to pinned addresses while keeping the hostname for Host and SNI. */
 export function createPinnedDispatcher(pins: ReadonlyMap<string, ResolvedAddress[]>): Agent {
-  return new Agent({ connect: { lookup: createPinnedLookup(pins) } });
+  // HTTP/1.1 only: the global fetch never negotiated h2, and a site scanner gains nothing from it.
+  return new Agent({ allowH2: false, connect: { lookup: createPinnedLookup(pins) } });
 }
 
 async function readCapped(

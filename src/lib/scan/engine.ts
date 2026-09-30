@@ -4,7 +4,7 @@ import { notifyBusinessUsers } from "@/lib/notifications";
 import { getCachedResponse, promptCacheKey, recordProviderEvent, setCachedResponse } from "@/lib/providers/cache";
 import { DEFAULT_COMPLETION_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS } from "@/lib/providers/limits";
 import { assertMockAllowed, getClassifier, getProviders, isMockMode } from "@/lib/providers/registry";
-import { type AIProvider, ENGINE_LABELS, type EngineId, LIVE_ENGINE_IDS, type ProviderResponse } from "@/lib/providers/types";
+import { type AIProvider, ENGINE_LABELS, type EngineId, LIVE_ENGINE_IDS, ProviderError, type ProviderResponse } from "@/lib/providers/types";
 import { computeScore } from "@/lib/scoring";
 import type { CompetitorInput, EngineInput, RunInput, ScoringInput } from "@/lib/scoring/types";
 import { analyzeDeterministic, buildClassifierPrompt, mergeAnalysis, normalizeCompetitorName, parseClassifierOutput } from "./analyze";
@@ -281,7 +281,8 @@ async function runQueryBatch(audit: AuditRow): Promise<void> {
   ]);
   const promptById = new Map(prompts.map((p) => [p.id, p]));
   const knownFacts = buildKnownFacts(audit, siteCheck, truthBrief);
-  const classifier = getClassifier();
+  const trippedEngines = audit.engines.filter((e) => e.status === "error").map((e) => e.engine as EngineId);
+  const classifier = getClassifier(trippedEngines);
 
   await Promise.allSettled(
     claimed.map((unit) => {
@@ -331,11 +332,36 @@ async function markUnit(unit: ClaimedRun, auditId: string, status: "failed" | "s
   void auditId;
 }
 
-async function reserveCall(auditId: string): Promise<boolean> {
-  const updated = await prisma.$executeRaw`
-    UPDATE "Audit" SET "providerCallsUsed" = "providerCallsUsed" + 1
-    WHERE id = ${auditId} AND "providerCallsUsed" < "maxProviderCalls"`;
-  return updated === 1;
+/** Only successful calls count toward the per-scan cap; a failing engine must not starve the others. */
+async function underCap(auditId: string): Promise<boolean> {
+  const audit = await prisma.audit.findUnique({ where: { id: auditId }, select: { providerCallsUsed: true, maxProviderCalls: true } });
+  return Boolean(audit && audit.providerCallsUsed < audit.maxProviderCalls);
+}
+
+async function countCall(auditId: string, engine: string): Promise<void> {
+  await prisma.$transaction([
+    prisma.audit.update({ where: { id: auditId }, data: { providerCallsUsed: { increment: 1 } } }),
+    prisma.scanEngine.updateMany({ where: { auditId, engine }, data: { callsMade: { increment: 1 } } }),
+  ]);
+}
+
+/** Auth, billing and quota failures will not clear on retry; the whole engine is taken out of this scan. */
+function isFatalProviderError(err: unknown): boolean {
+  if (!(err instanceof ProviderError)) return false;
+  if (err.status === 401 || err.status === 402 || err.status === 403) return true;
+  if (err.status === 404) return /model/i.test(err.message);
+  if (err.status === 429) return /billing|plan|credit|insufficient/i.test(err.message);
+  return /api key|unauthori[sz]ed|permission denied/i.test(err.message);
+}
+
+async function tripEngine(auditId: string, engine: string, message: string): Promise<void> {
+  await prisma.$transaction([
+    prisma.engineRun.updateMany({
+      where: { auditId, engine, status: "pending" },
+      data: { status: "skipped", error: `Engine unavailable: ${message}`.slice(0, 500), leaseUntil: null, completedAt: new Date() },
+    }),
+    prisma.scanEngine.updateMany({ where: { auditId, engine }, data: { status: "error", error: message.slice(0, 500) } }),
+  ]);
 }
 
 function boundedJson(value: unknown): Prisma.InputJsonValue {
@@ -360,11 +386,10 @@ async function runUnit(
     const cached = response !== null;
 
     if (!response) {
-      if (!(await reserveCall(audit.id))) {
+      if (!(await underCap(audit.id))) {
         await markUnit(unit, audit.id, "skipped", "Per-scan provider call cap reached");
         return;
       }
-      await prisma.scanEngine.updateMany({ where: { auditId: audit.id, engine: provider.id }, data: { callsMade: { increment: 1 } } });
       const started = Date.now();
       try {
         response = await provider.query(prompt.text, {
@@ -379,6 +404,7 @@ async function runUnit(
             runIndex: unit.runIndex,
           },
         });
+        await countCall(audit.id, provider.id);
         await recordProviderEvent({ engine: provider.id, kind: "query", ok: true, latencyMs: Date.now() - started });
       } catch (err) {
         await recordProviderEvent({ engine: provider.id, kind: "error", ok: false, message: errorMessage(err), latencyMs: Date.now() - started });
@@ -389,7 +415,7 @@ async function runUnit(
 
     const deterministic = analyzeDeterministic(response.answerText, businessName, businessDomain);
     let classifierOutput = null;
-    if (classifier?.complete && (await reserveCall(audit.id))) {
+    if (classifier?.complete && (await underCap(audit.id))) {
       try {
         const { system, user } = buildClassifierPrompt({
           answer: response.answerText,
@@ -400,9 +426,11 @@ async function runUnit(
           knownFacts,
         });
         const completion = await classifier.complete(system, user, { timeoutMs: DEFAULT_COMPLETION_TIMEOUT_MS });
+        await countCall(audit.id, classifier.id);
         classifierOutput = parseClassifierOutput(completion.text);
       } catch (err) {
         await recordProviderEvent({ engine: classifier.id, kind: "error", ok: false, message: `classifier: ${errorMessage(err)}` });
+        if (isFatalProviderError(err)) await tripEngine(audit.id, classifier.id, errorMessage(err));
         classifierOutput = null;
       }
     }
@@ -464,6 +492,11 @@ async function runUnit(
     ]);
   } catch (err) {
     const message = errorMessage(err).slice(0, 500);
+    if (isFatalProviderError(err)) {
+      await prisma.engineRun.update({ where: { id: unit.id }, data: { status: "failed", error: message, leaseUntil: null, completedAt: new Date() } });
+      await tripEngine(audit.id, provider.id, message);
+      return;
+    }
     const exhausted = unit.attempts >= MAX_ATTEMPTS;
     await prisma.engineRun.update({
       where: { id: unit.id },

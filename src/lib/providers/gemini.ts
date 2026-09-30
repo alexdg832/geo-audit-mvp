@@ -2,8 +2,9 @@ import { DEFAULT_COMPLETION_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS, withRetry, wit
 import { type AIProvider, type ProviderCitation, ProviderError, providerHttpError } from "./types";
 
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
-export const GEMINI_DEFAULT_MODEL = "gemini-2.5-flash";
-export const GEMINI_FAST_MODEL = "gemini-2.5-flash-lite";
+// The Gemini API retired gemini-2.5-flash for new users in 2026 and points at gemini-3.8-flash.
+export const GEMINI_DEFAULT_MODEL = "gemini-3.8-flash";
+export const GEMINI_FAST_MODEL = "gemini-3.8-flash";
 
 interface GroundingChunk {
   web?: { uri?: string; title?: string };
@@ -122,15 +123,19 @@ export function createGeminiProvider(apiKey: string): AIProvider {
       return { engine: "gemini", model: fastModel, text, latencyMs: Date.now() - started };
     },
     async health() {
-      const { signal, clear } = withTimeout(10_000);
+      // A model can be listed yet refuse generation, so the check makes one minimal generation call.
+      const { signal, clear } = withTimeout(15_000);
       try {
-        const res = await fetch(`${BASE_URL}/models/${encodeURIComponent(model)}`, {
-          headers: { "x-goog-api-key": apiKey },
+        const res = await fetch(`${BASE_URL}/models/${encodeURIComponent(model)}:generateContent`, {
+          method: "POST",
+          headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+          body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Reply with the single word: ok" }] }], generationConfig: { maxOutputTokens: 5 } }),
           signal,
           cache: "no-store",
         });
-        if (res.ok) return { ok: true, message: `Key accepted; model ${model} available` };
-        return { ok: false, message: `HTTP ${res.status} from /models/${model}` };
+        if (res.ok) return { ok: true, message: `Key accepted; model ${model} responded` };
+        const body = (await res.text()).replace(/\s+/g, " ").slice(0, 200);
+        return { ok: false, message: `HTTP ${res.status}: ${body}` };
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : "Health check failed" };
       } finally {

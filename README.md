@@ -45,8 +45,9 @@ nothing is ever exposed with a `NEXT_PUBLIC_` prefix.
 - `DATABASE_URL` / `DATABASE_URL_UNPOOLED` — Postgres connection strings (pooled and direct). Neon provides both automatically on Vercel.
 - `SESSION_SECRET` — secret used to sign client session cookies.
 - `ADMIN_PASSWORD` — the password that gates `/admin`.
-- `AUDIT_DEMO_FAST` — set to `"true"` to shorten the ~60–90s audit run to ~10s, handy for fast manual testing.
 - `OPENAI_API_KEY`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `PERPLEXITY_API_KEY` — AI engine keys. Each engine is enabled only when its key is present; missing engines are reported as "not configured" and the scan proceeds with the rest.
+- `OPENAI_MODEL`, `ANTHROPIC_MODEL`, `GEMINI_MODEL`, `PERPLEXITY_MODEL` (and `*_FAST_MODEL`) — optional model overrides.
+- `SCAN_PER_IP_HOURLY_LIMIT`, `SCAN_GLOBAL_HOURLY_LIMIT` — optional rate limits for anonymous scan starts (defaults 3 and 30).
 - `RESEND_API_KEY` — transactional email.
 - `MOCK_MODE` — `"true"` runs the whole audit on labelled fixture data with no provider keys. Local development only.
 
@@ -55,7 +56,7 @@ nothing is ever exposed with a `NEXT_PUBLIC_` prefix.
 **As a business owner:**
 
 1. Land on the homepage and start an audit for your business.
-2. Watch the audit run, then view the results (score, source trust, consistency, AI readiness, AI visibility).
+2. Watch the scan ask four AI engines the questions your customers ask, then read the report: score and grade, critical failures, six-pillar breakdown, every engine answer with its cited sources, competitors, source map, cost of inaction and a prioritised roadmap.
 3. Click "Fix this with us" to either book a call or skip straight to a client account.
 4. Land on your client dashboard, where you can track your Truth Brief and content pushes over time.
 
@@ -72,20 +73,22 @@ Running `npx prisma db seed` prints a demo client email and password to the
 console — use those to log in as a client. The admin password is whatever
 `ADMIN_PASSWORD` is set to in your `.env`.
 
-## Where the mocks are, and where to plug in real APIs
+## How a scan works
 
-The audit pipeline has one real check and several mocked ones:
+1. `startAuditAction` (`src/lib/actions/audit.ts`) creates the audit row with an engine roster (one row per engine: `live` or `not_configured`), issues a claim cookie, and kicks the first tick with `after()`.
+2. `POST /api/audits/[id]/tick` advances the scan by one unit of work; the running page keeps calling it until the scan completes. Any tick from any instance resumes a stalled scan, and admins can resume from `/admin/scans`.
+   - **site** stage — `src/lib/scan/siteScan.ts` fetches the homepage, `robots.txt`, `llms.txt` and the sitemap through an SSRF-safe fetcher and records structured data, NAP, hours, FAQ, rendering and crawler access. `resolveBusiness.ts` infers the category; `prompts.ts` generates the fixed prompt set; one `EngineRun` row is created per prompt × live engine × run.
+   - **queries** stage — each tick claims a small batch of pending runs (with a lease, so a killed tick is retried), calls the engine through `src/lib/providers/*` with its native web search, stores the answer, every citation with its trust tier and supported passage, mention position, sentiment, accuracy and competitors.
+   - **finalize** stage — competitors are aggregated, `src/lib/scoring` computes the versioned score, and `ScoreBreakdown` + `Report` rows are written.
+3. `/audit/[id]/results` renders the report from those rows; `/api/audits/[id]/pdf` exports it.
 
-- `src/lib/audit/checks/website.ts` — **real.** Actually fetches the given website, its `robots.txt`, and `llms.txt`. No API key needed.
-- `src/lib/audit/mocks/mentions.ts` — mocked. In production, replace with a real search/mention-discovery API plus an LLM pass to classify source tier and accuracy.
-- `src/lib/audit/mocks/consistency.ts` — mocked. In production, replace with a real NAP (name/address/phone) consistency check across the gathered mentions.
-- `src/lib/audit/mocks/aiVisibility.ts` — mocked. In production, replace with real prompts sent to AI assistant APIs (ChatGPT/Claude/Perplexity) asking what they know about the business.
-- `src/lib/audit/mocks/aiSnippet.ts` — mocked. In production, replace with a real captured AI assistant response, with claims cross-checked against the Truth Brief.
+Engines are enabled only when their key is present. With `MOCK_MODE=true` the whole flow runs on labelled fixtures (`src/lib/providers/mock.ts`); mock scans are flagged in the database and banner-labelled in the UI, and mock mode refuses to run on a deployed environment.
 
 Other things worth knowing:
 
-- Real email sending is out of scope for this MVP — look for `TODO` markers wherever it would plug in.
+- Real email sending is not wired yet (`RESEND_API_KEY` is reserved for it).
 - The Calendly URL in `config/site.ts` is a placeholder — swap it for a real scheduling link before launch.
+- Deploying the migrations to the existing production database needs a one-time baseline: `prisma migrate resolve --applied 20260929000000_init` (see `docs/UPGRADE_SUMMARY.md`).
 
 ## Tech stack
 

@@ -76,9 +76,10 @@ export function getProvider(id: EngineId): AIProvider | null {
 }
 
 /** The cheapest configured engine that can run a search-free completion, used to classify answers. */
-export function getClassifier(): AIProvider | null {
+export function getClassifier(exclude: EngineId[] = []): AIProvider | null {
   if (isMockMode()) return mockProvider;
   for (const id of ["openai", "anthropic", "gemini"] as const) {
+    if (exclude.includes(id)) continue;
     const key = keyFor(id);
     if (key) return build(id, key);
   }

@@ -88,3 +88,28 @@ export function providerHttpError(engine: EngineId, status: number, bodySnippet:
   const snippet = bodySnippet.replace(/\s+/g, " ").slice(0, 300);
   return new ProviderError(engine, `${engine} responded ${status}: ${snippet}`, { status, retryable });
 }
+
+/**
+ * Customer-safe description of a failed check for report rows and the public status feed.
+ * A ProviderError message carries a snippet of the provider's response body (which can echo a
+ * key prefix or org id) and other errors can carry database hosts, so the raw text stays in
+ * ProviderEvent and the server log only.
+ */
+export function publicErrorMessage(err: unknown): string {
+  if (err instanceof ProviderError) {
+    const label = ENGINE_LABELS[err.engine] ?? err.engine;
+    const status = err.status;
+    if (status === null) return `${label} returned an unusable answer`;
+    if (status === 401 || status === 403) return `${label} rejected the API key (HTTP ${status})`;
+    if (status === 402) return `${label} reported a billing or quota problem (HTTP 402)`;
+    if (status === 404) return `${label} could not find the requested model or endpoint (HTTP 404)`;
+    if (status === 408) return `${label} timed out (HTTP 408)`;
+    if (status === 429) return `${label} rate-limited the request (HTTP 429)`;
+    if (status >= 500) return `${label} had a server error (HTTP ${status})`;
+    return `${label} returned HTTP ${status}`;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  if (/timed out|timeout|abort/i.test(message)) return "The request timed out";
+  if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up|network/i.test(message)) return "Network error while contacting the engine";
+  return "Unexpected error while running this check";
+}

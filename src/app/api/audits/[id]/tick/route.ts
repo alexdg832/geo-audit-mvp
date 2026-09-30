@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { advanceScan } from "@/lib/scan/engine";
+import { advanceScan, ScanRequestError } from "@/lib/scan/engine";
 
 export const maxDuration = 120;
 
@@ -9,8 +9,10 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/audits/[id
     const result = await advanceScan(id);
     return NextResponse.json(result);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Tick failed";
-    const status = /not found|not a scan/i.test(message) ? 404 : 500;
-    return NextResponse.json({ error: message }, { status });
+    // This route is unauthenticated: only fixed strings go back to the caller, since a raw
+    // exception can name the database host or quote a provider's response.
+    if (err instanceof ScanRequestError) return NextResponse.json({ error: err.message }, { status: err.status });
+    console.error("Scan tick failed", { auditId: id, message: err instanceof Error ? err.message : String(err) });
+    return NextResponse.json({ error: "Tick failed" }, { status: 500 });
   }
 }

@@ -4,7 +4,7 @@ import { notifyBusinessUsers } from "@/lib/notifications";
 import { getCachedResponse, promptCacheKey, recordProviderEvent, setCachedResponse } from "@/lib/providers/cache";
 import { DEFAULT_COMPLETION_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS } from "@/lib/providers/limits";
 import { assertMockAllowed, getClassifier, getProviders, isMockMode } from "@/lib/providers/registry";
-import { type AIProvider, ENGINE_LABELS, type EngineId, LIVE_ENGINE_IDS, ProviderError, type ProviderResponse } from "@/lib/providers/types";
+import { type AIProvider, ENGINE_LABELS, type EngineId, LIVE_ENGINE_IDS, ProviderError, type ProviderResponse, publicErrorMessage } from "@/lib/providers/types";
 import { computeScore } from "@/lib/scoring";
 import type { CompetitorInput, EngineInput, RunInput, ScoringInput } from "@/lib/scoring/types";
 import { analyzeDeterministic, buildClassifierPrompt, mergeAnalysis, normalizeCompetitorName, parseClassifierOutput } from "./analyze";
@@ -41,6 +41,22 @@ export interface TickResult {
 
 type AuditRow = NonNullable<Awaited<ReturnType<typeof loadAudit>>>;
 
+/** A refusal the public tick/status routes may echo verbatim: the message is fixed text, never a wrapped exception. */
+export class ScanRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status = 404) {
+    super(message);
+    this.name = "ScanRequestError";
+    this.status = status;
+  }
+}
+
+/** Strips CR/LF/tabs and collapses runs of whitespace; these values end up in email subjects and prompts. */
+export function sanitizeInlineText(value: string, maxLength: number): string {
+  return value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
 async function loadAudit(auditId: string) {
   return prisma.audit.findUnique({ where: { id: auditId }, include: { engines: true } });
 }
@@ -66,9 +82,9 @@ export async function createScan(input: StartScanInput): Promise<{ auditId: stri
       scanVersion: SCAN_VERSION,
       stage: "site",
       isMock: mock,
-      resolvedName: input.name,
+      resolvedName: sanitizeInlineText(input.name, 200),
       resolvedWebsite: input.website,
-      resolvedLocation: input.location,
+      resolvedLocation: input.location ? sanitizeInlineText(input.location, 200) || null : null,
       runsPerPrompt: DEFAULT_RUNS_PER_PROMPT,
       maxProviderCalls: DEFAULT_MAX_PROVIDER_CALLS,
       requesterIpHash: input.requesterIpHash,
@@ -83,7 +99,7 @@ export async function createScan(input: StartScanInput): Promise<{ auditId: stri
 /** Advances a scan by one unit of work. Safe to call from any instance at any time. */
 export async function advanceScan(auditId: string): Promise<TickResult> {
   const audit = await loadAudit(auditId);
-  if (!audit || !audit.scanVersion) throw new Error("Audit is not a scan-engine audit");
+  if (!audit || !audit.scanVersion) throw new ScanRequestError("Audit is not a scan-engine audit");
   if (audit.status === "running") {
     switch (audit.stage) {
       case "site":
@@ -104,7 +120,7 @@ export async function advanceScan(auditId: string): Promise<TickResult> {
 
 export async function summarize(auditId: string): Promise<TickResult> {
   const audit = await loadAudit(auditId);
-  if (!audit) throw new Error("Audit not found");
+  if (!audit) throw new ScanRequestError("Audit not found");
   const grouped = await prisma.engineRun.groupBy({ by: ["engine", "status"], where: { auditId }, _count: { _all: true } });
   const units = { total: 0, complete: 0, failed: 0, pending: 0, running: 0, skipped: 0 };
   const perEngine = new Map<string, { complete: number; failed: number; total: number }>();
@@ -198,7 +214,7 @@ async function runSiteStage(audit: AuditRow): Promise<void> {
       });
     });
   } catch (err) {
-    await failScan(audit.id, err);
+    await failScan(audit.id, err, "We could not finish checking the website and preparing the prompt set. Please try again later.");
   }
 }
 
@@ -255,6 +271,14 @@ interface ClaimedRun {
 async function runQueryBatch(audit: AuditRow): Promise<void> {
   const providers = new Map<string, AIProvider>(getProviders().map((p) => [p.id, p]));
   const batchSize = Math.min(8, Math.max(2, providers.size * 2));
+
+  // A unit whose lease expired on its last permitted attempt (the process died mid-run) is
+  // orphaned: the claim below skips it and the stage would otherwise wait on it forever.
+  await prisma.engineRun.updateMany({
+    where: { auditId: audit.id, status: "running", attempts: { gte: MAX_ATTEMPTS }, OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date() } }] },
+    data: { status: "failed", error: `Exceeded ${MAX_ATTEMPTS} attempts`, leaseUntil: null, completedAt: new Date() },
+  });
+
   const claimed = await prisma.$queryRaw<ClaimedRun[]>`
     UPDATE "EngineRun"
     SET status = 'running', attempts = attempts + 1, "leaseUntil" = now() + interval '180 seconds'
@@ -282,7 +306,7 @@ async function runQueryBatch(audit: AuditRow): Promise<void> {
   const promptById = new Map(prompts.map((p) => [p.id, p]));
   const knownFacts = buildKnownFacts(audit, siteCheck, truthBrief);
   const trippedEngines = audit.engines.filter((e) => e.status === "error").map((e) => e.engine as EngineId);
-  const classifier = getClassifier(trippedEngines);
+  const classifiers = classifierPool(trippedEngines);
 
   await Promise.allSettled(
     claimed.map((unit) => {
@@ -290,7 +314,7 @@ async function runQueryBatch(audit: AuditRow): Promise<void> {
       const provider = providers.get(unit.engine);
       if (!prompt) return markUnit(unit, audit.id, "failed", "Prompt row missing");
       if (!provider) return markUnit(unit, audit.id, "skipped", "Engine is no longer configured");
-      return runUnit(audit, unit, { index: prompt.index, text: prompt.text }, provider, classifier, knownFacts);
+      return runUnit(audit, unit, { index: prompt.index, text: prompt.text }, provider, classifiers, knownFacts);
     })
   );
 
@@ -332,17 +356,46 @@ async function markUnit(unit: ClaimedRun, auditId: string, status: "failed" | "s
   void auditId;
 }
 
-/** Only successful calls count toward the per-scan cap; a failing engine must not starve the others. */
-async function underCap(auditId: string): Promise<boolean> {
-  const audit = await prisma.audit.findUnique({ where: { id: auditId }, select: { providerCallsUsed: true, maxProviderCalls: true } });
-  return Boolean(audit && audit.providerCallsUsed < audit.maxProviderCalls);
+/**
+ * Reserves one call against the per-scan cap in a single conditional update, so the units of a
+ * batch (and concurrent ticks) cannot all read "under cap" and overshoot it together.
+ */
+async function reserveCall(auditId: string): Promise<boolean> {
+  const reserved = await prisma.audit.updateMany({
+    where: { id: auditId, providerCallsUsed: { lt: prisma.audit.fields.maxProviderCalls } },
+    data: { providerCallsUsed: { increment: 1 } },
+  });
+  return reserved.count > 0;
 }
 
-async function countCall(auditId: string, engine: string): Promise<void> {
-  await prisma.$transaction([
-    prisma.audit.update({ where: { id: auditId }, data: { providerCallsUsed: { increment: 1 } } }),
-    prisma.scanEngine.updateMany({ where: { auditId, engine }, data: { callsMade: { increment: 1 } } }),
-  ]);
+/** Only successful calls count toward the cap; a failing engine must not starve the others. */
+async function releaseCall(auditId: string): Promise<void> {
+  await prisma.audit.updateMany({ where: { id: auditId, providerCallsUsed: { gt: 0 } }, data: { providerCallsUsed: { decrement: 1 } } });
+}
+
+async function countEngineCall(auditId: string, engine: string): Promise<void> {
+  await prisma.scanEngine.updateMany({ where: { auditId, engine }, data: { callsMade: { increment: 1 } } });
+}
+
+interface ClassifierPool {
+  pick(): AIProvider | null;
+  disable(engine: EngineId): void;
+}
+
+/**
+ * Resolves the classifier lazily so a fatal classifier failure (a retired fast-model id, a typo in
+ * *_FAST_MODEL) only removes that engine from classification for the rest of the batch. It must
+ * never trip the engine's own query units: complete() and query() use different models, and a
+ * genuine key failure trips the engine through its query path anyway.
+ */
+function classifierPool(excluded: EngineId[]): ClassifierPool {
+  const unusable = new Set<EngineId>(excluded);
+  return {
+    pick: () => getClassifier(Array.from(unusable)),
+    disable: (engine) => {
+      unusable.add(engine);
+    },
+  };
 }
 
 /** Auth, billing and quota failures will not clear on retry; the whole engine is taken out of this scan. */
@@ -375,18 +428,19 @@ async function runUnit(
   unit: ClaimedRun,
   prompt: { index: number; text: string },
   provider: AIProvider,
-  classifier: AIProvider | null,
+  classifiers: ClassifierPool,
   knownFacts: string[]
 ): Promise<void> {
   const businessName = audit.resolvedName ?? "";
   const businessDomain = audit.resolvedDomain ?? null;
+  let classifier: AIProvider | null = null;
   try {
     const promptHash = promptCacheKey(prompt.text, audit.resolvedLocation);
     let response: ProviderResponse | null = await getCachedResponse({ engine: provider.id, promptHash, runIndex: unit.runIndex });
     const cached = response !== null;
 
     if (!response) {
-      if (!(await underCap(audit.id))) {
+      if (!(await reserveCall(audit.id))) {
         await markUnit(unit, audit.id, "skipped", "Per-scan provider call cap reached");
         return;
       }
@@ -404,9 +458,10 @@ async function runUnit(
             runIndex: unit.runIndex,
           },
         });
-        await countCall(audit.id, provider.id);
+        await countEngineCall(audit.id, provider.id);
         await recordProviderEvent({ engine: provider.id, kind: "query", ok: true, latencyMs: Date.now() - started });
       } catch (err) {
+        await releaseCall(audit.id);
         await recordProviderEvent({ engine: provider.id, kind: "error", ok: false, message: errorMessage(err), latencyMs: Date.now() - started });
         throw err;
       }
@@ -415,7 +470,8 @@ async function runUnit(
 
     const deterministic = analyzeDeterministic(response.answerText, businessName, businessDomain);
     let classifierOutput = null;
-    if (classifier?.complete && (await underCap(audit.id))) {
+    classifier = classifiers.pick();
+    if (classifier?.complete && (await reserveCall(audit.id))) {
       try {
         const { system, user } = buildClassifierPrompt({
           answer: response.answerText,
@@ -426,11 +482,13 @@ async function runUnit(
           knownFacts,
         });
         const completion = await classifier.complete(system, user, { timeoutMs: DEFAULT_COMPLETION_TIMEOUT_MS });
-        await countCall(audit.id, classifier.id);
+        await countEngineCall(audit.id, classifier.id);
         classifierOutput = parseClassifierOutput(completion.text);
       } catch (err) {
+        await releaseCall(audit.id);
         await recordProviderEvent({ engine: classifier.id, kind: "error", ok: false, message: `classifier: ${errorMessage(err)}` });
-        if (isFatalProviderError(err)) await tripEngine(audit.id, classifier.id, errorMessage(err));
+        // Only this engine's classification is affected; its query units keep running.
+        if (isFatalProviderError(err)) classifiers.disable(classifier.id);
         classifierOutput = null;
       }
     }
@@ -493,7 +551,12 @@ async function runUnit(
       }),
     ]);
   } catch (err) {
-    const message = errorMessage(err).slice(0, 500);
+    // Provider failures are already recorded in ProviderEvent; anything else (a database error
+    // mid-unit) would otherwise leave no trace of its real cause.
+    if (!(err instanceof ProviderError)) {
+      console.error("Scan unit failed", { auditId: audit.id, unitId: unit.id, engine: provider.id, message: errorMessage(err).slice(0, 500) });
+    }
+    const message = publicErrorMessage(err);
     if (isFatalProviderError(err)) {
       await prisma.engineRun.update({ where: { id: unit.id }, data: { status: "failed", error: message, leaseUntil: null, completedAt: new Date() } });
       await tripEngine(audit.id, provider.id, message);
@@ -514,10 +577,16 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-async function failScan(auditId: string, err: unknown): Promise<void> {
-  await prisma.audit.update({
-    where: { id: auditId },
-    data: { status: "failed", stage: "done", error: errorMessage(err).slice(0, 500), completedAt: new Date() },
+/**
+ * Marks a running scan as failed with a customer-facing message; the raw error (which can name
+ * the database host or a provider response) goes to the server log only. The status guard means
+ * no late failure can demote a scan that already committed as complete.
+ */
+async function failScan(auditId: string, err: unknown, publicMessage: string): Promise<void> {
+  console.error("Scan failed", { auditId, message: errorMessage(err).slice(0, 500) });
+  await prisma.audit.updateMany({
+    where: { id: auditId, status: "running" },
+    data: { status: "failed", stage: "done", error: publicMessage, completedAt: new Date() },
   });
 }
 
@@ -532,6 +601,7 @@ async function runFinalize(audit: AuditRow): Promise<void> {
   });
   if (claimed.count === 0) return;
 
+  let ready: { score: number; grade: string } | null = null;
   try {
     const [runs, prompts, siteCheck] = await Promise.all([
       prisma.engineRun.findMany({ where: { auditId: audit.id }, include: { citations: true }, orderBy: [{ runIndex: "asc" }, { createdAt: "asc" }] }),
@@ -643,10 +713,17 @@ async function runFinalize(audit: AuditRow): Promise<void> {
         },
       }),
     ]);
-
-    await notifyBusinessUsers(audit.businessId, `Your new GEO report is ready: score ${output.score}/100 (${output.grade}).`);
+    ready = { score: output.score, grade: output.grade };
   } catch (err) {
-    await failScan(audit.id, err);
+    await failScan(audit.id, err, "We could not finish scoring the evidence. Please try again later.");
+    return;
+  }
+
+  // The report is committed at this point; a notification hiccup must not touch the audit.
+  try {
+    await notifyBusinessUsers(audit.businessId, `Your new GEO report is ready: score ${ready.score}/100 (${ready.grade}).`);
+  } catch (err) {
+    console.error("Report notification failed", { auditId: audit.id, message: errorMessage(err).slice(0, 500) });
   }
 }
 
@@ -716,4 +793,19 @@ export async function checkScanRateLimit(requesterIpHash: string | null): Promis
   if (global >= Number(process.env.SCAN_GLOBAL_HOURLY_LIMIT ?? 30)) return "Scanning is busy right now. Please try again in a little while.";
   if (perIp >= Number(process.env.SCAN_PER_IP_HOURLY_LIMIT ?? 3)) return "You have started several audits recently. Please wait an hour before starting another.";
   return null;
+}
+
+/** Per-business cooldown for re-runs: a fresh scan of the same business inside the window is refused, whatever the last one's outcome. */
+export async function checkRerunCooldown(businessId: string, now = Date.now()): Promise<string | null> {
+  const minutes = Number(process.env.SCAN_RERUN_COOLDOWN_MINUTES ?? 60);
+  if (!(minutes > 0)) return null;
+  const windowMs = minutes * 60 * 1000;
+  const latest = await prisma.audit.findFirst({
+    where: { businessId, scanVersion: { not: null }, createdAt: { gte: new Date(now - windowMs) } },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  if (!latest) return null;
+  const waitMinutes = Math.max(1, Math.ceil((latest.createdAt.getTime() + windowMs - now) / 60_000));
+  return `This business was scanned less than ${minutes} minutes ago. Please wait about ${waitMinutes} more ${waitMinutes === 1 ? "minute" : "minutes"} before re-running.`;
 }

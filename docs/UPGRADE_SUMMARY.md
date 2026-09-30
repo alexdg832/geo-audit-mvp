@@ -64,7 +64,7 @@ The circuit breaker handled all four correctly (each engine tripped on first con
 Full walkthrough: [DEPLOY.md](DEPLOY.md).
 
 1. Add the provider keys, `SESSION_SECRET`/`ADMIN_PASSWORD`, `RESEND_API_KEY`, `ADMIN_NOTIFY_EMAIL` and `NEXT_PUBLIC_CALENDLY_URL` to the Vercel project (never `MOCK_MODE` on Preview/Production; the app refuses it). Remove the now-unused `AUDIT_DEMO_FAST`.
-2. Baseline the existing databases once before the first deploy of this branch: `prisma migrate resolve --applied 20260929000000_init` against Production and Preview (using `DATABASE_URL_UNPOOLED`). `prisma migrate deploy` then applies `20260930001445_scan_evidence_scoring` and `20260930020000_support_email`.
+2. Migrations run in the build (`scripts/migrate-deploy.mjs`). The first build against the existing `db push`-managed database baselines it automatically (marks `20260929000000_init` as applied), then applies `20260930001445_scan_evidence_scoring` and `20260930020000_support_email`.
 3. Keep the Vercel function limit at ≥ 120 s (the tick route exports `maxDuration = 120`).
 4. Verify a sending domain in Resend and set `RESEND_FROM_EMAIL` so client emails deliver.
 

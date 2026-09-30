@@ -4,8 +4,9 @@ Step-by-step for taking the `feat/geo-audit-engine-upgrade` branch from your lap
 Vercel project `geo-audit-mvp` (GitHub repo `alexdg832/geo-audit-mvp`). Nothing on this
 branch is deployed until you push it; Vercel builds only what is on GitHub.
 
-The order matters: **environment variables and the database baseline come before the first
-push**, otherwise the first build fails at the migration step.
+Environment variables are best set before the first push; a build with missing keys still
+succeeds, but the engines show as "not configured" until the variables exist and the project
+is redeployed.
 
 ## 1. Collect the values you need
 
@@ -44,30 +45,26 @@ vercel env add SESSION_SECRET preview
 vercel env rm AUDIT_DEMO_FAST production
 ```
 
-## 3. Baseline the production database (one time only)
+## 3. Database migrations (automatic)
 
-The build now runs `prisma migrate deploy`. Your Neon database was created with
-`prisma db push`, so Prisma has no record of which migrations are applied. Tell it that the
-first migration (the schema as it exists today) is already there:
+The build runs `node scripts/migrate-deploy.mjs`, which applies the migrations in
+`prisma/migrations`. Your Neon database was created with `prisma db push`, so it has the old
+tables but no migration history; the script detects that state once and marks the first
+migration (`20260929000000_init`, the schema as it already exists) as applied, then applies
+the newer ones (`20260930001445_scan_evidence_scoring`, `20260930020000_support_email`).
+An empty database gets everything created from scratch; a database with history is simply
+migrated forward.
 
-1. In Vercel, open **Settings → Environment Variables**, find `DATABASE_URL_UNPOOLED`
-   (Production) and reveal its value.
-2. On your laptop, from the project folder:
+Nothing to do by hand. If you ever want to check from your laptop, reveal
+`DATABASE_URL_UNPOOLED` in **Settings → Environment Variables** and run:
 
 ```bash
-DATABASE_URL="<paste the unpooled url>" DATABASE_URL_UNPOOLED="<paste the unpooled url>" \
-  npx prisma migrate resolve --applied 20260929000000_init
-
-DATABASE_URL="<same>" DATABASE_URL_UNPOOLED="<same>" npx prisma migrate status
+DATABASE_URL="<unpooled url>" DATABASE_URL_UNPOOLED="<unpooled url>" npx prisma migrate status
 ```
 
-`migrate status` should list `20260929000000_init` as applied and the two newer migrations
-(`20260930001445_scan_evidence_scoring`, `20260930020000_support_email`) as pending. The
-build applies those two.
-
-If Preview deployments use a **separate** database that already has the old tables, repeat
-the same two commands with that database's URL. If Preview uses a fresh, empty database, skip
-this; `migrate deploy` creates everything from scratch.
+Note that every deployment, Preview included, migrates whichever database its environment
+points to. With one shared Neon database that means a Preview build of a branch with a new
+migration changes production's schema; keep migrations additive.
 
 ## 4. Push the branch (Preview deployment)
 

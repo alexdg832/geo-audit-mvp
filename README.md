@@ -98,7 +98,7 @@ Engines are enabled only when their key is present. With `MOCK_MODE=true` the wh
 - Support threads live in `SupportThread` / `SupportMessage`; clients use `/dashboard/support`, the team uses `/admin/support`. Statuses: `open` (waiting on us), `answered`, `closed`.
 - The Calendly link comes from `NEXT_PUBLIC_CALENDLY_URL` (placeholder until set).
 
-Deploying: see [docs/DEPLOY.md](docs/DEPLOY.md). The existing production database needs a one-time baseline (`prisma migrate resolve --applied 20260929000000_init`) before the first deploy of this branch.
+Deploying: see [docs/DEPLOY.md](docs/DEPLOY.md). The build runs `scripts/migrate-deploy.mjs`, which baselines a database that predates migrations once and then applies the pending migrations.
 
 ## Tech stack
 

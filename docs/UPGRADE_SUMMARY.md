@@ -40,6 +40,19 @@ Branch: `feat/geo-audit-engine-upgrade` (local commits only, nothing pushed). Ba
 - Admin **Provider status** gained an email delivery card (configuration, sandbox warning, last 15 emails). The Calendly link is now `NEXT_PUBLIC_CALENDLY_URL` with an inline embed when set.
 - Verified on 2026-09-30 against the live Resend API: the key works; with no verified domain Resend refuses recipients other than the account owner (HTTP 403, recorded in the log), which is the expected sandbox behaviour until a domain is verified.
 
+## Research and what it changed
+
+[GEO_RESEARCH.md](GEO_RESEARCH.md) holds 280 claims across 14 topics (engine behaviour, source trust, technical signals, local businesses, nondeterminism, competing tools, and the four provider APIs). Every claim carries the URL it was read from and a Proven / Suggestive / Speculative label; an independent verification pass re-fetched each URL (229 verified as stated, 51 corrected in wording or scope with the correction noted inline, none unsupported). Section 9 labels every candidate criterion evidence-backed or heuristic.
+
+Consequences applied in this branch:
+
+- **Perplexity adapter rewritten for the Agent API.** Sonar chat completions ended on 2026-09-27; the adapter now posts to `/v1/agent` with an explicit model and `web_search` tool (frozen rather than a floating preset), reads `search_results` plus `url_citation` annotations, and falls back to `[n]` / `[web:n]` markers. Confirmed live: the endpoint answers with the account's quota error, not a 404.
+- **OpenAI default model** moved from the `gpt-5` alias (snapshot scheduled for removal on 2026-12-11) to its documented replacement `gpt-5.6-sol`; requests now include the consulted-but-uncited sources in the raw response.
+- **Claude adapter** keeps `web_search_20250305` (still current, direct search) and now surfaces search errors that the API returns inside a 200 response and retries paused turns, so a failed search is never recorded as "business not mentioned". No temperature is sent (current models reject anything but 1.0).
+- **Gemini**: the legacy `generateContent` surface remains supported and is what the adapter uses. Two things the owner must know: Google Search grounding on Gemini 3.x is paid-tier only (that is the 429 seen in testing), and the Gemini API terms prohibit programmatic collection or analysis of grounded results and links, which is what an audit does. A legal read is needed before Gemini answers appear in customer reports.
+- **Methodology labels** (Section 9): the evidence-backed criteria are the IAB mention-rate and citation-rate definitions, keeping mentioned and cited separate, per-engine reporting, repeat sampling, localized prompts, crawler access (OAI-SearchBot, PerplexityBot, Claude-SearchBot, Googlebot indexability), business facts in raw HTML, Google Business Profile completeness (Google surfaces only) and share of voice. Everything in Source Authority, `llms.txt`, structured data, FAQ format and content tactics is heuristic (content tactics are "lab-conditional": they help only once a page is already retrieved). These labels are reflected in the scoring metrics and in [SCORING_METHODOLOGY.md](SCORING_METHODOLOGY.md).
+- **Sampling**: the research puts decision-grade measurement at 5–10 runs per prompt and 50+ category prompts (IAB); this MVP runs 2 runs × 6 prompts per engine to keep a scan under the call cap, so confidence is reported as directional. Both numbers are configuration, not code.
+
 ## Engines live during testing
 
 None. Every adapter was exercised against its real endpoint on 2026-09-29 and each failed before returning an answer, for reasons outside the code:

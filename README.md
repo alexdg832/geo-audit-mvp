@@ -10,16 +10,24 @@ Live demo: **https://geo-audit-mvp.vercel.app**
 ## Quickstart
 
 Data is stored in Postgres (via [Neon](https://neon.tech), provisioned through the
-Vercel Marketplace in production). For local dev, point `DATABASE_URL` /
-`DATABASE_URL_UNPOOLED` at any Postgres database — a free Neon project works well.
+Vercel Marketplace in production). For local dev you can either point
+`DATABASE_URL` / `DATABASE_URL_UNPOOLED` at any Postgres database, or use the
+embedded Postgres that ships as a dev dependency (no Docker or system install):
 
 ```bash
-cp .env.example .env   # then fill in your Postgres connection strings
+cp .env.example .env.local   # all secrets live in .env.local (gitignored); never in .env
 npm install
-npx prisma db push     # syncs the schema — run again after schema changes
-npx prisma db seed     # loads demo client + demo admin data — optional but recommended
+npm run db:dev               # starts embedded Postgres on 127.0.0.1:54329, keep it running
+                             # then set DATABASE_URL and DATABASE_URL_UNPOOLED to
+                             # postgresql://geo:geo@127.0.0.1:54329/geo in .env.local
+npx prisma db push           # syncs the schema — run again after schema changes
+npx prisma db seed           # loads demo client + demo admin data — optional but recommended
 npm run dev
 ```
+
+Other useful scripts: `npm run typecheck`, `npm run lint`, `npm test`, and
+`npm run check-secrets` (scans staged files for key-like strings; enable it as a
+pre-commit hook with `git config core.hooksPath scripts/git-hooks`).
 
 Then open [http://localhost:3000](http://localhost:3000).
 
@@ -31,12 +39,16 @@ to the same database.
 
 ## Environment variables
 
-Set in `.env` (see `.env.example`):
+Set in `.env.local` (see `.env.example`). Every secret is read server-side only;
+nothing is ever exposed with a `NEXT_PUBLIC_` prefix.
 
 - `DATABASE_URL` / `DATABASE_URL_UNPOOLED` — Postgres connection strings (pooled and direct). Neon provides both automatically on Vercel.
 - `SESSION_SECRET` — secret used to sign client session cookies.
 - `ADMIN_PASSWORD` — the password that gates `/admin`.
 - `AUDIT_DEMO_FAST` — set to `"true"` to shorten the ~60–90s audit run to ~10s, handy for fast manual testing.
+- `OPENAI_API_KEY`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `PERPLEXITY_API_KEY` — AI engine keys. Each engine is enabled only when its key is present; missing engines are reported as "not configured" and the scan proceeds with the rest.
+- `RESEND_API_KEY` — transactional email.
+- `MOCK_MODE` — `"true"` runs the whole audit on labelled fixture data with no provider keys. Local development only.
 
 ## Walking through the app
 

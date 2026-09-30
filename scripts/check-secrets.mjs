@@ -12,7 +12,7 @@ const PATTERNS = [
   ["Google API key", /\bAIza[0-9A-Za-z_-]{30,}/],
   ["Google token", /\bAQ\.[A-Za-z0-9_-]{30,}/],
   ["Resend key", /\bre_[A-Za-z0-9]{20,}/],
-  ["Database URL with password", /(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s:/]+:[^\s@/]+@/],
+  ["Database URL with password", /(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s:/]+:[^\s@/]+@[^\s/]+/],
   ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/],
   ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{30,}/],
   ["Slack token", /\bxox[abpr]-[A-Za-z0-9-]{10,}/],
@@ -24,7 +24,7 @@ const PATTERNS = [
 ];
 
 const SKIP_PATH = /(^|\/)(node_modules|\.git|\.next|\.vercel)\/|(^|\/)package-lock\.json$|\.lock$|\.(png|jpe?g|gif|webp|ico|svg|woff2?|ttf|otf|pdf|zip|gz|tsbuildinfo)$/;
-const PLACEHOLDER = /password@|<[^>]+>|xxx|example|changeme|change-me|your[-_]|\$\{/i;
+const PLACEHOLDER = /password@|<[^>]+>|xxx|example|changeme|change-me|your[-_]|\$\{|@(?:127\.0\.0\.1|localhost)\b/i;
 
 function git(args) {
   const r = spawnSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });

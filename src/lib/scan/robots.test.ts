@@ -69,4 +69,33 @@ describe("isAllowed", () => {
     expect(hasDedicatedGroup(r, "ClaudeBot")).toBe(true);
     expect(hasDedicatedGroup(r, "GPTBot")).toBe(false);
   });
+
+  it("combines duplicate groups for the same agent regardless of order (RFC 9309 §2.2.1)", () => {
+    const first = parseRobots("User-agent: GPTBot\nDisallow: /wp-admin/\n\nUser-agent: GPTBot\nDisallow: /");
+    const second = parseRobots("User-agent: GPTBot\nDisallow: /\n\nUser-agent: GPTBot\nDisallow: /wp-admin/");
+    expect(isAllowed(first, "GPTBot", "/")).toBe(false);
+    expect(isAllowed(second, "GPTBot", "/")).toBe(false);
+    expect(isAllowed(first, "GPTBot", "/wp-admin/x")).toBe(false);
+    expect(isAllowed(first, "ClaudeBot", "/")).toBe(true);
+  });
+
+  it("combines duplicate wildcard groups on fallback", () => {
+    const r = parseRobots("User-agent: *\nDisallow: /wp-admin/\n\nUser-agent: *\nDisallow: /");
+    expect(isAllowed(r, "GPTBot", "/")).toBe(false);
+    expect(isAllowed(r, "ClaudeBot", "/about")).toBe(false);
+  });
+
+  it("still lets the more specific group override the wildcard when both are duplicated", () => {
+    const r = parseRobots("User-agent: *\nDisallow: /\n\nUser-agent: GPTBot\nAllow: /\n\nUser-agent: *\nDisallow: /x\n\nUser-agent: GPTBot\nDisallow: /private");
+    expect(isAllowed(r, "GPTBot", "/")).toBe(true);
+    expect(isAllowed(r, "GPTBot", "/private/1")).toBe(false);
+    expect(isAllowed(r, "ClaudeBot", "/")).toBe(false);
+  });
+
+  it("ignores an empty User-agent token instead of matching every agent", () => {
+    const r = parseRobots("User-agent:\nDisallow: /\n\nUser-agent: *\nAllow: /");
+    expect(r.groups[0].agents).toEqual([]);
+    expect(isAllowed(r, "GPTBot", "/")).toBe(true);
+    expect(hasDedicatedGroup(r, "GPTBot")).toBe(false);
+  });
 });

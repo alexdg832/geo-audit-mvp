@@ -57,7 +57,9 @@ export function parseRobots(text: string): ParsedRobots {
         current = { agents: [], rules: [] };
         groups.push(current);
       }
-      current.agents.push(value.toLowerCase());
+      // A bare "User-agent:" names nobody; keeping "" would make every agent
+      // prefix-match it and beat the wildcard group.
+      if (value) current.agents.push(value.toLowerCase());
       lastWasAgent = true;
       continue;
     }
@@ -83,21 +85,27 @@ function patternToRegex(pattern: string): RegExp {
   return new RegExp(re);
 }
 
-function findGroup(groups: RobotsGroup[], userAgent: string): RobotsGroup | null {
+/**
+ * Returns the rules that apply to a user-agent, or null when no group matches.
+ * RFC 9309 §2.2.1: every group naming the winning token (or every wildcard
+ * group on fallback) is combined, so a second "User-agent: GPTBot" block adds
+ * to the first instead of being silently dropped.
+ */
+function matchingRules(groups: RobotsGroup[], userAgent: string): RobotsRule[] | null {
   const ua = userAgent.toLowerCase();
-  let best: RobotsGroup | null = null;
-  let bestLength = -1;
+  let bestToken: string | null = null;
   for (const group of groups) {
     for (const agent of group.agents) {
-      if (agent === "*") continue;
-      if ((ua === agent || ua.startsWith(agent)) && agent.length > bestLength) {
-        best = group;
-        bestLength = agent.length;
+      if (!agent || agent === "*") continue;
+      if ((ua === agent || ua.startsWith(agent)) && (bestToken === null || agent.length > bestToken.length)) {
+        bestToken = agent;
       }
     }
   }
-  if (best) return best;
-  return groups.find((g) => g.agents.includes("*")) ?? null;
+  const token = bestToken ?? "*";
+  const matched = groups.filter((g) => g.agents.includes(token));
+  if (matched.length === 0) return null;
+  return matched.flatMap((g) => g.rules);
 }
 
 /**
@@ -105,11 +113,11 @@ function findGroup(groups: RobotsGroup[], userAgent: string): RobotsGroup | null
  * group applies, the longest matching rule wins, and ties favour Allow.
  */
 export function isAllowed(robots: ParsedRobots, userAgent: string, path = "/"): boolean {
-  const group = findGroup(robots.groups, userAgent);
-  if (!group) return true;
+  const rules = matchingRules(robots.groups, userAgent);
+  if (!rules) return true;
   let winner: RobotsRule | null = null;
   let winnerLength = -1;
-  for (const rule of group.rules) {
+  for (const rule of rules) {
     if (rule.path === "") {
       if (!rule.allow && winnerLength < 0) winner = { allow: true, path: "" };
       continue;
@@ -127,5 +135,5 @@ export function isAllowed(robots: ParsedRobots, userAgent: string, path = "/"): 
 /** True when the group that applies to this agent is a dedicated block, not the wildcard. */
 export function hasDedicatedGroup(robots: ParsedRobots, userAgent: string): boolean {
   const ua = userAgent.toLowerCase();
-  return robots.groups.some((g) => g.agents.some((a) => a !== "*" && (ua === a || ua.startsWith(a))));
+  return robots.groups.some((g) => g.agents.some((a) => a && a !== "*" && (ua === a || ua.startsWith(a))));
 }

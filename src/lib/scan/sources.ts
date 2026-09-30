@@ -36,7 +36,8 @@ const TIER2_DOMAINS = [
   "wikidata.org",
   "britannica.com",
   "bbb.org",
-  "google.com",
+  // The bare apex is handled by GOOGLE_APEX_AUTHORITATIVE_PATHS below: only Maps and
+  // Search results are authoritative, not every *.google.com host.
   "maps.google.com",
   "business.google.com",
   "g.co",
@@ -211,6 +212,9 @@ const TIER4_DOMAINS = [
   "weebly.com",
   "godaddysites.com",
   "sites.google.com",
+  "docs.google.com",
+  "drive.google.com",
+  "groups.google.com",
   "stackexchange.com",
   "stackoverflow.com",
   "discord.com",
@@ -232,12 +236,48 @@ const TIER4_DOMAINS = [
   "topix.com",
 ];
 
+/** On the google.com apex (www. stripped) only these paths carry authoritative listings. */
+const GOOGLE_APEX_AUTHORITATIVE_PATHS = /^\/(maps|search|local)(?:\/|$|\?)/;
+
+/**
+ * Platforms a small business commonly gives as its "website" or redirects to, on top of
+ * the tier lists. None of these can be a business's own domain.
+ */
+const EXTRA_PLATFORM_DOMAINS = ["google.com", "business.site", "linktr.ee", "linktree.com", "bio.link", "beacons.ai", "about.me", "carrd.co", "square.site", "myshopify.com"];
+
+/**
+ * Hosts that give every customer their own subdomain (mybiz.wixsite.com): that subdomain
+ * is genuinely the business's site, while the bare host is the platform.
+ */
+const USER_SUBDOMAIN_HOSTS = new Set([
+  "wixsite.com", "weebly.com", "wordpress.com", "blogspot.com", "godaddysites.com", "tumblr.com", "substack.com",
+  "business.site", "carrd.co", "square.site", "myshopify.com",
+]);
+
 function matchesDomain(domain: string, candidate: string): boolean {
   return domain === candidate || domain.endsWith(`.${candidate}`);
 }
 
 function inList(domain: string, list: string[]): string | null {
   return list.find((d) => matchesDomain(domain, d)) ?? null;
+}
+
+/**
+ * True when a domain is a shared third-party platform (social network, directory, review
+ * site, free-host root, Google) rather than a domain one business owns. Used so a site that
+ * redirects to facebook.com, or an owner who types their Facebook page as the website, never
+ * makes that platform the "own site" for citation scoring.
+ */
+export function isKnownPlatformDomain(domain: string): boolean {
+  const d = domain.toLowerCase().replace(/^www\./, "");
+  if (!d) return false;
+  for (const list of [TIER2_DOMAINS, TIER3_DOMAINS, TIER4_DOMAINS, EXTRA_PLATFORM_DOMAINS]) {
+    for (const entry of list) {
+      if (d === entry) return true;
+      if (d.endsWith(`.${entry}`) && !USER_SUBDOMAIN_HOSTS.has(entry)) return true;
+    }
+  }
+  return false;
 }
 
 const GOV_EDU = /(\.|^)(gov|edu|mil)$|\.gov\.[a-z]{2}$|\.gc\.ca$|\.edu\.[a-z]{2}$|\.ac\.[a-z]{2}$/;
@@ -258,6 +298,16 @@ export function classifySource(url: string, businessDomain: string | null): Tier
   if (t4) return { tier: 4, reason: `User-generated or low-trust platform (${t4})`, isBusinessOwned: false };
 
   if (GOV_EDU.test(domain)) return { tier: 2, reason: "Government or academic domain", isBusinessOwned: false };
+
+  if (domain === "google.com") {
+    // domainOf strips "www.", so www.google.com/maps/... lands here. Anything else on the
+    // apex (accounts, support, policies) is an ordinary third-party page.
+    const path = new URL(url).pathname;
+    if (GOOGLE_APEX_AUTHORITATIVE_PATHS.test(path)) {
+      return { tier: 2, reason: `Authoritative third party (google.com${path.match(/^\/[a-z]+/)?.[0] ?? ""})`, isBusinessOwned: false };
+    }
+    return { tier: 3, reason: "General third-party website", isBusinessOwned: false };
+  }
 
   const t2 = inList(domain, TIER2_DOMAINS);
   if (t2) return { tier: 2, reason: `Authoritative third party (${t2})`, isBusinessOwned: false };

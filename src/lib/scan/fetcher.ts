@@ -1,5 +1,6 @@
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { isIP, isIPv4, type LookupFunction } from "node:net";
+import { Agent, fetch as undiciFetch, type Response as UndiciResponse } from "undici";
 
 export const AUDIT_USER_AGENT =
   "Mozilla/5.0 (compatible; TrueSourceAuditBot/1.0; +https://geo-audit-mvp.vercel.app)";
@@ -74,21 +75,52 @@ function isPrivateIPv4(ip: string): boolean {
   );
 }
 
+/** Expands an IPv6 literal to its eight 16-bit groups, folding a trailing dotted IPv4 into the last two. */
+function expandIPv6(ip: string): number[] | null {
+  let text = ip.toLowerCase();
+  const zone = text.indexOf("%");
+  if (zone !== -1) text = text.slice(0, zone);
+  const lastColon = text.lastIndexOf(":");
+  const tail = text.slice(lastColon + 1);
+  if (tail.includes(".")) {
+    if (!isIPv4(tail)) return null;
+    const [a, b, c, d] = tail.split(".").map(Number);
+    text = `${text.slice(0, lastColon + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const rest = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  if (halves.length === 2 && fill < 1) return null;
+  const groups = [...head, ...new Array<string>(fill).fill("0"), ...rest];
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
+  return groups.map((g) => parseInt(g, 16));
+}
+
+function ipv4FromGroups(hi: number, lo: number): string {
+  return `${hi >>> 8}.${hi & 0xff}.${lo >>> 8}.${lo & 0xff}`;
+}
+
 function isPrivateIPv6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) return isPrivateIPv4(mapped[1]);
-  return (
-    lower === "::" ||
-    lower === "::1" ||
-    lower.startsWith("fc") ||
-    lower.startsWith("fd") ||
-    lower.startsWith("fe8") ||
-    lower.startsWith("fe9") ||
-    lower.startsWith("fea") ||
-    lower.startsWith("feb") ||
-    lower.startsWith("ff")
-  );
+  const groups = expandIPv6(ip);
+  if (!groups) return true;
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
+  const zeroPrefix80 = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0;
+  // IPv4-mapped (::ffff:0:0/96), IPv4-compatible (::/96, which also covers :: and ::1) and NAT64
+  // (64:ff9b::/96) addresses embed an IPv4 address in the low 32 bits and the OS connects to that
+  // IPv4 address, so classify it instead. Matching on the expanded groups matters because the URL
+  // parser rewrites the dotted spelling (::ffff:127.0.0.1) to hex (::ffff:7f00:1).
+  if (
+    (zeroPrefix80 && (g5 === 0 || g5 === 0xffff)) ||
+    (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0)
+  ) {
+    return isPrivateIPv4(ipv4FromGroups(g6, g7));
+  }
+  // 6to4 (2002::/16) embeds the IPv4 address in bits 16-47.
+  if (g0 === 0x2002) return isPrivateIPv4(ipv4FromGroups(g1, g2));
+  // Everything outside global unicast (2000::/3) is loopback, unspecified, ULA, link-local, multicast or reserved.
+  return (g0 & 0xe000) !== 0x2000;
 }
 
 export function isPublicAddress(ip: string): boolean {
@@ -98,25 +130,66 @@ export function isPublicAddress(ip: string): boolean {
   return false;
 }
 
-/** Rejects loopback, private, link-local and multicast targets before any request is made. */
-export async function assertPublicHost(hostname: string): Promise<void> {
+export interface ResolvedAddress {
+  address: string;
+  family: number;
+}
+
+/**
+ * Rejects loopback, private, link-local and multicast targets before any request is made.
+ * Returns the validated addresses so the connection can be pinned to them.
+ */
+export async function assertPublicHost(hostname: string): Promise<ResolvedAddress[]> {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
     throw new Error(`Refusing to fetch non-public host ${host}`);
   }
-  if (isIP(host)) {
+  const literal = isIP(host);
+  if (literal) {
     if (!isPublicAddress(host)) throw new Error(`Refusing to fetch non-public address ${host}`);
-    return;
+    return [{ address: host, family: literal }];
   }
   const addresses = await lookup(host, { all: true });
   if (addresses.length === 0) throw new Error(`DNS lookup returned no addresses for ${host}`);
   for (const { address } of addresses) {
     if (!isPublicAddress(address)) throw new Error(`Refusing to fetch ${host}: resolves to non-public address`);
   }
+  return addresses;
+}
+
+/**
+ * A `net.connect` lookup that only ever answers with addresses assertPublicHost already validated,
+ * keyed by lowercase hostname. Without this, the socket would run its own DNS query and a rebinding
+ * resolver could hand it a private address after the check passed.
+ */
+export function createPinnedLookup(pins: ReadonlyMap<string, ResolvedAddress[]>): LookupFunction {
+  return (hostname, options, callback) => {
+    const wantedFamily = options.family === 4 || options.family === 6 ? options.family : 0;
+    const addresses = (pins.get(hostname.toLowerCase()) ?? []).filter(
+      (a) => wantedFamily === 0 || a.family === wantedFamily
+    );
+    // Node's own dns.lookup answers asynchronously, so do the same to avoid re-entrancy in net.connect.
+    process.nextTick(() => {
+      if (addresses.length === 0) {
+        const err: NodeJS.ErrnoException = new Error(`Refusing to connect to unvalidated host ${hostname}`);
+        err.code = "ENOTFOUND";
+        callback(err, "");
+      } else if (options.all) {
+        callback(null, addresses);
+      } else {
+        callback(null, addresses[0].address, addresses[0].family);
+      }
+    });
+  };
+}
+
+/** An undici Agent whose sockets connect only to pinned addresses while keeping the hostname for Host and SNI. */
+export function createPinnedDispatcher(pins: ReadonlyMap<string, ResolvedAddress[]>): Agent {
+  return new Agent({ connect: { lookup: createPinnedLookup(pins) } });
 }
 
 async function readCapped(
-  res: Response,
+  res: UndiciResponse,
   maxBytes: number,
   signal: AbortSignal
 ): Promise<{ body: string; bytes: number; truncated: boolean }> {
@@ -152,6 +225,7 @@ async function readCapped(
 /**
  * Fetches a public URL with a deadline that covers redirects and the body read,
  * validating every hop against private address ranges and capping the body size.
+ * Each hop connects only to the addresses that passed validation (DNS pinning).
  * Never throws: failures are reported in the result.
  */
 export async function safeFetch(url: string, options: SafeFetchOptions = {}): Promise<SafeFetchResult> {
@@ -159,6 +233,9 @@ export async function safeFetch(url: string, options: SafeFetchOptions = {}): Pr
   const started = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
+  const pins = new Map<string, ResolvedAddress[]>();
+  // undici's own fetch honours the dispatcher and bypasses Next's patched global fetch (no Data Cache).
+  const dispatcher = createPinnedDispatcher(pins);
   let current = url;
   let redirected = false;
 
@@ -186,12 +263,12 @@ export async function safeFetch(url: string, options: SafeFetchOptions = {}): Pr
         return fail(`Invalid URL: ${current}`);
       }
       if (target.protocol !== "http:" && target.protocol !== "https:") return fail(`Unsupported protocol ${target.protocol}`);
-      await assertPublicHost(target.hostname);
+      pins.set(target.hostname.toLowerCase(), await assertPublicHost(target.hostname));
 
-      const res = await fetch(target, {
+      const res = await undiciFetch(target, {
         redirect: "manual",
         signal: controller.signal,
-        cache: "no-store",
+        dispatcher,
         headers: {
           "User-Agent": AUDIT_USER_AGENT,
           Accept: opts.accept,
@@ -239,5 +316,7 @@ export async function safeFetch(url: string, options: SafeFetchOptions = {}): Pr
     return fail(message);
   } finally {
     clearTimeout(timer);
+    // The agent is per call, so no pinned socket outlives the validation it was made under.
+    await dispatcher.destroy().catch(() => undefined);
   }
 }

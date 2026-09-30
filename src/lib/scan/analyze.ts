@@ -42,8 +42,9 @@ export interface AnswerAnalysis extends DeterministicAnalysis {
   classifierUsed: boolean;
 }
 
+// Trailing position only: "PC Repair Shop" and "Co-op Market" keep their first word, "Smith DDS, PC" loses both suffixes.
 const LEGAL_SUFFIXES =
-  /\b(?:llc|l\.l\.c\.|inc\.?|incorporated|ltd\.?|limited|co\.?|corp\.?|corporation|pllc|p\.c\.|pc|dds|d\.d\.s\.|md|m\.d\.|pa|p\.a\.|lp|llp|gmbh|plc)\b/gi;
+  /(?:[^\p{L}\p{N}]+(?:llc|l\.l\.c\.?|inc\.?|incorporated|ltd\.?|limited|co\.?|corp\.?|corporation|pllc|p\.c\.?|pc|dds|d\.d\.s\.?|md|m\.d\.?|pa|p\.a\.?|lp|llp|gmbh|plc))+[^\p{L}\p{N}]*$/iu;
 
 const GENERIC_TOKENS = new Set([
   "the", "of", "and", "a", "an", "at", "in", "for", "family", "group", "associates", "center", "centre", "clinic",
@@ -70,7 +71,9 @@ export function buildMentionRegex(name: string): RegExp | null {
   const tokens = normalizeBusinessName(name).split(" ").filter(Boolean);
   if (tokens.length === 0) return null;
   const significant = tokens.filter((t) => !GENERIC_TOKENS.has(t));
-  const optionalAllowed = significant.length >= 1 && significant.length < tokens.length;
+  // Generic words become optional only when at least two distinctive words remain to anchor the match. With one
+  // ("Family Dental Center" → "dental") the regex would count every use of the category word as a mention.
+  const optionalAllowed = significant.length >= 2 && significant.length < tokens.length;
 
   let pattern = "";
   let pendingOptional = "";
@@ -110,15 +113,19 @@ export function findMentions(answer: string, name: string, domain: string | null
   return matches.sort((a, b) => a.start - b.start);
 }
 
-const LIST_LINE = /^\s*(?:[-*•]|\d{1,2}[.)])\s+/;
+const LIST_LINE = /^(\s*)(?:[-*•]|\d{1,2}[.)])\s+/;
 
 function listRankOf(answer: string, index: number): { rank: number | null; count: number | null } {
   const lines = answer.split("\n");
   let offset = 0;
   let listCount = 0;
   let rank: number | null = null;
+  let baseIndent: number | null = null;
   for (const line of lines) {
-    const isItem = LIST_LINE.test(line);
+    const item = LIST_LINE.exec(line);
+    // Only items at the outermost indentation count; deeper bullets are details of the item above them.
+    if (item) baseIndent ??= item[1].length;
+    const isItem = item !== null && item[1].length <= (baseIndent ?? 0);
     if (isItem) listCount += 1;
     const end = offset + line.length;
     if (isItem && rank === null && index >= offset && index <= end) rank = listCount;
@@ -128,24 +135,60 @@ function listRankOf(answer: string, index: number): { rank: number | null; count
 }
 
 const NO_INFO_PATTERNS = [
-  /\b(?:could(?:n'?t| not)|can(?:'t|not)|unable to|(?:wasn'?t|was not) able to|(?:don'?t|do not|doesn'?t|does not) (?:have|find|know)|no)\b[^.\n]{0,80}\b(?:information|details|data|records?|results?|listings?|presence|reviews)\b/i,
+  // No bare "no" here: "no long-term contracts, and its reviews are excellent" is a recommendation, not an echo.
+  // The last pattern covers the "no information" form directly.
+  /\b(?:could(?:n'?t| not)|can(?:'t|not)|unable to|(?:wasn'?t|was not) able to|(?:don'?t|do not|doesn'?t|does not) (?:have|find|know))\b[^.\n]{0,80}\b(?:information|details|data|records?|results?|listings?|presence|reviews)\b/i,
   /\bnot (?:aware|familiar) (?:of|with)\b/i,
   /\b(?:no|little|limited) (?:reliable |specific |public |verified |available )?(?:information|details|data)\b/i,
 ];
 
-function sentenceAround(answer: string, match: MentionMatch): string {
-  const before = answer.slice(0, match.start);
-  const start = Math.max(before.lastIndexOf(". "), before.lastIndexOf("\n"), before.lastIndexOf("! "), before.lastIndexOf("? "), 0);
-  const after = answer.slice(match.end);
-  const ends = [after.indexOf(". "), after.indexOf("\n"), after.indexOf("! "), after.indexOf("? ")].filter((i) => i !== -1);
-  const end = ends.length ? match.end + Math.min(...ends) + 1 : answer.length;
-  return answer.slice(start, end);
+interface Span {
+  start: number;
+  end: number;
 }
 
-/** True when the sentence naming the business only says the engine has no information about it. */
+const SENTENCE_BREAK = /\. |\n|! |\? /g;
+const CLAUSE_BREAK = /, |; |—|–/g;
+
+function splitSpans(answer: string, window: Span, breaks: RegExp): Span[] {
+  const spans: Span[] = [];
+  let start = window.start;
+  for (const m of answer.slice(window.start, window.end).matchAll(breaks)) {
+    const at = window.start + m.index;
+    spans.push({ start, end: at });
+    start = at + m[0].length;
+  }
+  spans.push({ start, end: window.end });
+  return spans;
+}
+
+function spanIndexAt(spans: Span[], index: number): number {
+  const i = spans.findIndex((s) => index < s.end);
+  return i === -1 ? spans.length - 1 : i;
+}
+
+/**
+ * The clause naming the business, within its sentence. A caveat in a later clause ("..., though I don't have
+ * information about its pricing") does not taint the mention. When the name only introduces its clause
+ * ("As for X, ..." / "X — ..."), the statement about it is the next clause, so that one is included too.
+ */
+function clauseAround(answer: string, match: MentionMatch): string {
+  const sentences = splitSpans(answer, { start: 0, end: answer.length }, SENTENCE_BREAK);
+  const sentence = {
+    start: sentences[spanIndexAt(sentences, match.start)].start,
+    end: sentences[spanIndexAt(sentences, match.end - 1)].end,
+  };
+  const clauses = splitSpans(answer, sentence, CLAUSE_BREAK);
+  const first = spanIndexAt(clauses, match.start);
+  let last = spanIndexAt(clauses, match.end - 1);
+  if (last + 1 < clauses.length && !/[\p{L}\p{N}]/u.test(answer.slice(match.end, clauses[last].end))) last += 1;
+  return answer.slice(clauses[first].start, clauses[last].end);
+}
+
+/** True when the clause naming the business only says the engine has no information about it. */
 export function isEchoOnly(answer: string, match: MentionMatch): boolean {
-  const sentence = sentenceAround(answer, match);
-  return NO_INFO_PATTERNS.some((p) => p.test(sentence));
+  const clause = clauseAround(answer, match);
+  return NO_INFO_PATTERNS.some((p) => p.test(clause));
 }
 
 export function analyzeDeterministic(answer: string, name: string, domain: string | null): DeterministicAnalysis {
@@ -212,6 +255,12 @@ function extractJson(text: string): string | null {
 const SENTIMENTS = new Set(["positive", "neutral", "negative", "mixed", "not_applicable"]);
 const ACCURACIES = new Set(["accurate", "inaccurate", "unverifiable", "not_applicable"]);
 
+/** Strict: only `true` or the string "true" count, since Boolean("false") is true. */
+function parseBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  return typeof value === "string" && value.trim().toLowerCase() === "true";
+}
+
 export function parseClassifierOutput(text: string): ClassifierOutput | null {
   const json = extractJson(text);
   if (!json) return null;
@@ -223,14 +272,14 @@ export function parseClassifierOutput(text: string): ClassifierOutput | null {
           .map((b) => ({
             name: String(b.name ?? "").trim(),
             domain: typeof b.domain === "string" && b.domain.trim() ? b.domain.trim().toLowerCase().replace(/^www\./, "") : null,
-            isTarget: Boolean(b.isTarget),
+            isTarget: parseBoolean(b.isTarget),
           }))
           .filter((b) => b.name.length > 0)
       : [];
     const sentiment = SENTIMENTS.has(String(raw.sentiment)) ? (raw.sentiment as ClassifierOutput["sentiment"]) : "not_applicable";
     const accuracy = ACCURACIES.has(String(raw.accuracy)) ? (raw.accuracy as ClassifierOutput["accuracy"]) : "not_applicable";
     return {
-      mentioned: Boolean(raw.mentioned),
+      mentioned: parseBoolean(raw.mentioned),
       sentiment,
       accuracy,
       accuracyNotes: typeof raw.accuracyNotes === "string" ? raw.accuracyNotes.trim() : "",
@@ -274,7 +323,19 @@ export function mergeAnalysis(
     position += 1;
   }
 
-  const mentioned = deterministic.mentioned || (Boolean(classifier?.mentioned) && !deterministic.echoOnly);
+  // The classifier listed the target among the businesses the answer names: structured corroboration of its verdict.
+  const targetListed = mentionPosition !== null;
+  let mentioned: boolean;
+  if (!classifier) {
+    mentioned = deterministic.mentioned;
+  } else if (classifier.mentioned) {
+    // The deterministic echo guard yields only to a corroborated classifier; a bare "mentioned: true" cannot lift it.
+    mentioned = !deterministic.echoOnly || targetListed;
+  } else {
+    // A classifier "not mentioned" vetoes the text match when its structure agrees: it flagged a namesake (ambiguity)
+    // or left the target out of the businesses list. Inconsistent output (target listed, no ambiguity) trusts the text.
+    mentioned = deterministic.mentioned && classifier.ambiguity === null && targetListed;
+  }
   return {
     ...deterministic,
     mentioned,

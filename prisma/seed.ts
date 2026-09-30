@@ -3,7 +3,21 @@ import { hashPassword } from "../src/lib/auth/password";
 
 const prisma = new PrismaClient();
 
+function databaseHost(): string {
+  try {
+    return new URL(process.env.DATABASE_URL ?? "").hostname;
+  } catch {
+    return "";
+  }
+}
+
 async function main() {
+  // The seed wipes every table. Refuse anything that is not a local database.
+  if (!["127.0.0.1", "localhost"].includes(databaseHost()) && process.env.SEED_RESET !== "1") {
+    console.error("Refusing to seed a non-local database. Set SEED_RESET=1 to override deliberately.");
+    process.exit(1);
+  }
+
   await prisma.$transaction([
     prisma.notification.deleteMany(),
     prisma.contentPush.deleteMany(),

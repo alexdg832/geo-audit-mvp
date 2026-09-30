@@ -20,25 +20,56 @@ model Business {
   contentPushes ContentPush[]
 }
 
+// One Audit row is one scan. Audits created before the scan engine keep the
+// legacy columns; scan-engine audits have scanVersion set and hang their
+// evidence off the child tables below.
 model Audit {
   id                  String          @id @default(cuid())
   businessId          String
   business            Business        @relation(fields: [businessId], references: [id])
-  status              String          @default("running") // running | complete
-  stepsJson           String          @default("[]")
+  status              String          @default("running") // running | complete | failed
+  stepsJson           String          @default("[]") // legacy progress blob
   score               Int?
   sourceTrustScore    Int?
   consistencyScore    Int?
   aiReadinessScore    Int?
   aiVisibilityScore   Int?
-  websiteChecksJson   String? // JSON: WebsiteCheckResult
-  aiSnippetJson       String? // JSON: mocked "what AI says" snippet + flagged claims
-  recommendationsJson String? // JSON: string[] of top fixes
+  websiteChecksJson   String? // legacy JSON: WebsiteCheckResult
+  aiSnippetJson       String? // legacy JSON: AiSnippetPart[]
+  recommendationsJson String? // legacy JSON: string[]
   createdAt           DateTime        @default(now())
   completedAt         DateTime?
   mentions            SourceMention[]
 
+  scanVersion       String? // null for legacy audits
+  scoringVersion    String?
+  stage             String? // site | queries | finalize | done
+  isMock            Boolean   @default(false)
+  resolvedName      String?
+  resolvedWebsite   String?
+  resolvedDomain    String?
+  resolvedLocation  String?
+  category          String?
+  ambiguity         String?
+  runsPerPrompt     Int       @default(2)
+  maxProviderCalls  Int       @default(120)
+  providerCallsUsed Int       @default(0)
+  requesterIpHash   String?
+  error             String?
+  startedAt         DateTime?
+  lastProgressAt    DateTime?
+  engines           ScanEngine[]
+  prompts           ScanPrompt[]
+  runs              EngineRun[]
+  siteCheck         SiteCheck?
+  competitors       CompetitorDetected[]
+  breakdowns        ScoreBreakdown[]
+  report            Report?
+
   @@index([businessId])
+  @@index([businessId, status, completedAt])
+  @@index([requesterIpHash, createdAt])
+  @@index([status, lastProgressAt])
 }
 
 model SourceMention {
@@ -47,7 +78,7 @@ model SourceMention {
   audit     Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
   name      String
   url       String?
-  tier      Int // 1 = authoritative, 2 = mixed, 3 = low-trust
+  tier      Int // legacy: 1 = authoritative, 2 = mixed, 3 = low-trust
   snippet   String
   accurate  Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -75,6 +106,8 @@ model ContactRequest {
   goals     String?
   wantsCall Boolean  @default(false)
   createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model TruthBrief {
@@ -113,4 +146,209 @@ model Notification {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Scan engine: evidence tracing and versioned scoring
+// ---------------------------------------------------------------------------
+
+model ScanEngine {
+  id        String  @id @default(cuid())
+  auditId   String
+  audit     Audit   @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  engine    String // openai | anthropic | gemini | perplexity | mock
+  status    String // live | not_configured | error | skipped
+  model     String?
+  callsMade Int     @default(0)
+  error     String?
+
+  @@unique([auditId, engine])
+}
+
+model ScanPrompt {
+  id        String      @id @default(cuid())
+  auditId   String
+  audit     Audit       @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  index     Int
+  kind      String // recommendation | near_me | comparison | brand_direct
+  text      String
+  createdAt DateTime    @default(now())
+  runs      EngineRun[]
+
+  @@unique([auditId, index])
+}
+
+// One unit of scan work: a single prompt sent once to a single engine.
+model EngineRun {
+  id              String     @id @default(cuid())
+  auditId         String
+  audit           Audit      @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  promptId        String
+  prompt          ScanPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  engine          String
+  model           String?
+  runIndex        Int
+  status          String     @default("pending") // pending | running | complete | failed | skipped
+  attempts        Int        @default(0)
+  leaseUntil      DateTime?
+  answerText      String?
+  latencyMs       Int?
+  cached          Boolean    @default(false)
+  noCitations     Boolean    @default(false)
+  rawResponse     Json?
+  error           String?
+  mentioned       Boolean?
+  mentionPosition Int? // 1-based rank of the business among businesses named in the answer
+  mentionStart    Int?
+  mentionEnd      Int?
+  sentiment       String? // positive | neutral | negative | mixed
+  accuracy        String? // accurate | inaccurate | unverifiable | not_applicable
+  accuracyNotes   String?
+  competitors     Json? // [{ name, position, start, end }]
+  analysis        Json?
+  createdAt       DateTime   @default(now())
+  completedAt     DateTime?
+  citations       Citation[]
+
+  @@unique([promptId, engine, runIndex])
+  @@index([auditId, status])
+  @@index([auditId, engine])
+}
+
+model Citation {
+  id              String    @id @default(cuid())
+  runId           String
+  run             EngineRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  auditId         String
+  index           Int
+  url             String
+  domain          String
+  title           String?
+  tier            Int // 1 own properties & official records | 2 authoritative third parties | 3 review platforms & directories | 4 user-generated & low trust
+  tierReason      String?
+  isBusinessOwned Boolean   @default(false)
+  passageStart    Int?
+  passageEnd      Int?
+  passageText     String?
+  citedText       String?
+  createdAt       DateTime  @default(now())
+
+  @@index([runId])
+  @@index([auditId, domain])
+}
+
+model SiteCheck {
+  id              String    @id @default(cuid())
+  auditId         String    @unique
+  audit           Audit     @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  url             String?
+  fetchOk         Boolean   @default(false)
+  fetchError      String?
+  httpStatus      Int?
+  finalUrl        String?
+  https           Boolean   @default(false)
+  responseMs      Int?
+  htmlBytes       Int?
+  title           String?
+  metaDescription String?
+  h1              String?
+  wordCount       Int?
+  textRatio       Float?
+  jsRequired      Boolean?
+  metaRobots      String?
+  schemaTypes     Json?
+  schemaHasNap    Boolean?
+  hasAboutPage    Boolean?
+  hasContactInfo  Boolean?
+  detectedPhone   String?
+  detectedAddress String?
+  hasHours        Boolean?
+  hasFaq          Boolean?
+  lastModified    DateTime?
+  robotsFound     Boolean?
+  robots          Json? // { "GPTBot": true, ... } per AI user-agent
+  llmsTxtFound    Boolean?
+  sitemapFound    Boolean?
+  sitemapUrl      String?
+  raw             Json?
+  createdAt       DateTime  @default(now())
+}
+
+model CompetitorDetected {
+  id             String @id @default(cuid())
+  auditId        String
+  audit          Audit  @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  name           String
+  normalizedName String
+  domain         String?
+  mentionCount   Int    @default(0)
+  runCount       Int    @default(0)
+  engines        Json // ["openai", ...]
+  evidenceRunIds Json // [runId, ...]
+
+  @@unique([auditId, normalizedName])
+}
+
+model ScoreBreakdown {
+  id         String @id @default(cuid())
+  auditId    String
+  audit      Audit  @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  pillar     String
+  metric     String
+  label      String // evidence-backed | heuristic
+  weight     Float
+  value      Float // normalised 0-1
+  points     Float
+  pointsLost Float
+  confidence String // high | medium | low
+  finding    String
+  evidence   Json // { runIds, citationIds, siteCheckFields, competitorIds }
+  order      Int    @default(0)
+
+  @@index([auditId])
+}
+
+model Report {
+  id               String   @id @default(cuid())
+  auditId          String   @unique
+  audit            Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  scoringVersion   String
+  score            Int
+  grade            String
+  confidence       String
+  verdict          String
+  pillars          Json // [{ key, label, weight, score, confidence }]
+  caps             Json // [{ key, ceiling, reason, evidence }]
+  criticalFailures Json // [{ title, detail, evidence }]
+  roadmap          Json // [{ priority, title, pillar, pointsRecoverable, evidence }]
+  costOfInaction   Json?
+  generatedAt      DateTime @default(now())
+}
+
+// Same-day reuse of provider answers. runIndex is part of the key so repeated
+// runs within one scan stay independent samples.
+model ProviderCache {
+  id         String   @id @default(cuid())
+  engine     String
+  promptHash String
+  day        String // YYYY-MM-DD (UTC)
+  runIndex   Int
+  model      String?
+  response   Json
+  createdAt  DateTime @default(now())
+
+  @@unique([engine, promptHash, day, runIndex])
+  @@index([createdAt])
+}
+
+model ProviderEvent {
+  id        String   @id @default(cuid())
+  engine    String
+  kind      String // health | query | error
+  ok        Boolean
+  message   String?
+  latencyMs Int?
+  createdAt DateTime @default(now())
+
+  @@index([engine, createdAt])
 }

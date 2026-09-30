@@ -257,7 +257,7 @@ async function runQueryBatch(audit: AuditRow): Promise<void> {
   const batchSize = Math.min(8, Math.max(2, providers.size * 2));
   const claimed = await prisma.$queryRaw<ClaimedRun[]>`
     UPDATE "EngineRun"
-    SET status = 'running', attempts = attempts + 1, "leaseUntil" = now() + interval '90 seconds'
+    SET status = 'running', attempts = attempts + 1, "leaseUntil" = now() + interval '180 seconds'
     WHERE id IN (
       SELECT id FROM "EngineRun"
       WHERE "auditId" = ${audit.id}

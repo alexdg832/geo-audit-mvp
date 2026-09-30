@@ -105,11 +105,11 @@ Weak:
 
 `.env.local` now contains: `OPENAI_API_KEY`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `PERPLEXITY_API_KEY`, `RESEND_API_KEY`, `DATABASE_URL`, plus `SESSION_SECRET`, `ADMIN_PASSWORD`, `AUDIT_DEMO_FAST` pulled from Vercel. `DATABASE_URL_UNPOOLED` is absent.
 
-Caveats recorded so no adapter assumes a key is live: three provided values end in a bare `$` (a copy-truncation artifact), and the Gemini value does not match the documented `AIza…` key format. The provider registry will run a health check per engine and surface `live` / `not_configured` / `error` in the admin Provider Status panel rather than trusting presence alone.
+Health checks against the real endpoints on 2026-09-29: the OpenAI and Anthropic values are rejected (401 — both end in a bare `$`, a copy-truncation artifact), the Perplexity key authenticates but the account has no credits, and the Gemini key (an `AQ.`-style key, which is valid) hits a quota/billing limit. The provider registry surfaces `live` / `not_configured` / `error` per engine in the admin Provider Status panel rather than trusting key presence alone; see `docs/UPGRADE_SUMMARY.md`.
 
 ## 9. Plan
 
-**Phase 1 — research.** `docs/GEO_RESEARCH.md`: web research with a URL beside every claim, adversarially re-verified, plus the current request/response shapes of the four provider APIs. In progress.
+**Phase 1 — research.** `docs/GEO_RESEARCH.md`: web research with a URL beside every claim, adversarially re-verified, plus the current request/response shapes of the four provider APIs.
 
 **Phase 2a — provider layer** (`src/lib/providers/`):
 - `types.ts`: `AIProvider.query(prompt, opts) → { answerText, citations[], model, latencyMs, rawResponse }` where each citation carries `url`, `domain`, `title`, and the supported character span when the engine provides one (Gemini `groundingSupports`, OpenAI `url_citation` indices, Anthropic `cited_text`); Perplexity gives ordered sources without spans, stored as such.
